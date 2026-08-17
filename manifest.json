@@ -1,7 +1,7 @@
 {
 	"id": "inline-handwriting-puria",
 	"name": "Inline Handwriting",
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"minAppVersion": "1.7.2",
 	"description": "Write and edit handwriting directly inside a note.",
 	"author": "Puria Kazemieh",

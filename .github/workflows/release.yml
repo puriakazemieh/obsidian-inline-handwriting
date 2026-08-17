@@ -24,7 +24,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Verify release tag
-        run: test "$(node -p 'require(\"./manifest.json\").version')" = "$GITHUB_REF_NAME"
+        run: test "$(node -p 'require("./manifest.json").version')" = "$GITHUB_REF_NAME"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

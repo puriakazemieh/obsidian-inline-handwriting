@@ -11,7 +11,7 @@
    Compound selector (0,2,0) batte specificità dei selettori target (0,1,0). */
 .hwm_portal-panel.hwm_hidden,
 .hwm_portal-btn.hwm_hidden { display: none; }
-.hwm_hidden { display: none !important; }
+.hwm_hidden.hwm_hidden { display: none; }
 
 /* Annulla pointer-events (usato da stripContentEditableFalse sul formato legacy) */
 .hwm_no-pointer {
@@ -958,8 +958,7 @@
 	/* Wrap onto a second row rather than forcing a horizontal scrollbar. */
 	overflow: visible;
 	padding: 9px 8px;
-	row-gap: 10px;
-	column-gap: 12px;
+	gap: 10px 12px;
 }
 .hwm_inline-editor .hwm_editor-scroll {
 	flex: 0 0 auto;

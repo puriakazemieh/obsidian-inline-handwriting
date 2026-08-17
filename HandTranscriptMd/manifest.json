@@ -1,0 +1,10 @@
+{
+	"id": "inline-handwriting-puria",
+	"name": "Inline Handwriting",
+	"version": "1.0.0",
+	"minAppVersion": "1.7.2",
+	"description": "Write and edit handwriting directly inside an Obsidian note.",
+	"author": "Puria Kazemieh",
+	"authorUrl": "https://github.com/puriakazemieh",
+	"isDesktopOnly": false
+}

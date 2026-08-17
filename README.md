@@ -59,10 +59,7 @@ All drawing data stays in your Obsidian vault as SVG files. This plugin does not
 
 ## Development
 
-The plugin source is in [`HandTranscriptMd/`](./HandTranscriptMd).
-
 ```powershell
-cd HandTranscriptMd
 npm ci
 npm run build
 npm run lint

@@ -10,7 +10,6 @@ node_modules
 
 # Don't include the compiled main.js file in the repo.
 # They should be uploaded to GitHub releases instead.
-HandTranscriptMd/main.js
 
 # Exclude sourcemaps
 *.map
@@ -28,7 +27,6 @@ obsidian_ink/
 .claude/
 
 # Cartella C creata per errore dai vecchi script deploy (bug MSYS path conversion)
-HandTranscriptMd/C*/
 
 # Build output — included only in GitHub Releases, not in source
 main.js

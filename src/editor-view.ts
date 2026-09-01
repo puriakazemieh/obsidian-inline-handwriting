@@ -172,6 +172,9 @@ export async function buildEditorUI(opts: {
 	const textBtn = mkBtn(toolbar, 'text-cursor-input', 'btn_pen');
 	setButtonHelp(textBtn, 'Type text');
 	textBtn.classList.add('hwm_text-btn');
+	const lassoBtn = mkBtn(toolbar, 'mouse-pointer-2', 'btn_pen');
+	setButtonHelp(lassoBtn, 'Select & Move');
+	lassoBtn.classList.add('hwm_lasso-btn');
 	const strokeSize = toolbar.createDiv({ cls: 'hwm_toolbar-group hwm_stroke-size' });
 	const strokeSizeValue = strokeSize.createEl('span', { cls: 'hwm_stroke-size-value', text: '2 Px' });
 	const strokeSizeInput = strokeSize.createEl('input', {
@@ -332,16 +335,18 @@ export async function buildEditorUI(opts: {
 	// --- Event handlers ---
 	const cv = canvas;
 
-	const updateToolButtons = (mode: 'pen' | 'eraser' | 'highlighter' | 'text') => {
+	const updateToolButtons = (mode: 'pen' | 'eraser' | 'highlighter' | 'text' | 'lasso') => {
 		penBtn.classList.toggle('hwm_active', mode === 'pen');
 		eraserBtn.classList.toggle('hwm_active', mode === 'eraser');
 		highlighterBtn.classList.toggle('hwm_active', mode === 'highlighter');
 		textBtn.classList.toggle('hwm_active', mode === 'text');
+		lassoBtn.classList.toggle('hwm_active', mode === 'lasso');
 	};
 	penBtn.addEventListener('click', () => { cv.setMode('pen'); });
 	eraserBtn.addEventListener('click', () => { cv.setMode('eraser'); });
 	highlighterBtn.addEventListener('click', () => { cv.setMode('highlighter'); });
 	textBtn.addEventListener('click', () => { cv.setMode('text'); });
+	lassoBtn.addEventListener('click', () => { cv.setMode('lasso'); });
 	strokeSizeInput.addEventListener('input', () => {
 		strokeSizeValue.setText(`${strokeSizeInput.value} Px`);
 		cv.setLineWidth(Number(strokeSizeInput.value));
@@ -392,7 +397,16 @@ export async function buildEditorUI(opts: {
 	const editQuickColor = (index: number) => openQuickColourPicker(index);
 	let lastColourTap: { button: HTMLElement; at: number } | null = null;
 	const bindColorButton = (btn: HTMLElement) => {
-		btn.addEventListener('click', () => selectColor(colorBtns.indexOf(btn)));
+		btn.addEventListener('click', () => {
+			const index = colorBtns.indexOf(btn);
+			if (btn.classList.contains('hwm_active')) {
+				editQuickColor(index);
+			} else {
+				selectColor(index);
+			}
+		});
+		// Android WebView does not consistently emit dblclick for a touch/pen tap.
+		// Kept dblclick listener just in case some users double click out of habit.
 		btn.addEventListener('dblclick', event => {
 			event.preventDefault();
 			event.stopPropagation();

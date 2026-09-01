@@ -28,7 +28,7 @@ export interface TextElement {
 	fontSize: number;
 }
 
-export type DrawMode = 'pen' | 'eraser' | 'highlighter' | 'text';
+export type DrawMode = 'pen' | 'eraser' | 'highlighter' | 'text' | 'lasso';
 export type BackgroundPattern = 'ruled' | 'grid' | 'dots' | 'blank';
 
 // Spaziatura righe orizzontali — costante condivisa con svg-utils.ts
@@ -63,6 +63,10 @@ export class DrawingCanvas {
 	private color = '#000000';
 	private lineWidth = 2;
 	private isDrawing = false;
+	private lassoPath: Point[] = [];
+	private selectedStrokes: Set<Stroke> = new Set();
+	private isDraggingSelection = false;
+	private dragStartPoint: Point | null = null;
 	private changeCb: (() => void) | null = null;
 	// Se true: siamo su mobile (Android/iOS)
 	private mobileMode = false;
@@ -257,6 +261,11 @@ export class DrawingCanvas {
 	}
 
 	setMode(mode: DrawMode) {
+		if (mode !== 'lasso') {
+			this.selectedStrokes.clear();
+			this.lassoPath = [];
+			this.redraw();
+		}
 		this.mode = mode;
 		this.modeChangeCb?.(mode);
 	}
@@ -385,6 +394,38 @@ export class DrawingCanvas {
 		this.historyIdx = this.history.length - 1;
 	}
 
+	private pointInPolygon(pt: Point, polygon: Point[]): boolean {
+		let x = pt.x, y = pt.y;
+		let inside = false;
+		for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+			const pi = polygon[i];
+			const pj = polygon[j];
+			if (!pi || !pj) continue;
+			let xi = pi.x, yi = pi.y;
+			let xj = pj.x, yj = pj.y;
+			let intersect = ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+			if (intersect) inside = !inside;
+		}
+		return inside;
+	}
+
+	private isPointInSelection(pt: Point): boolean {
+		for (const stroke of this.selectedStrokes) {
+			let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+			for (const p of stroke.points) {
+				if (p.x < minX) minX = p.x;
+				if (p.x > maxX) maxX = p.x;
+				if (p.y < minY) minY = p.y;
+				if (p.y > maxY) maxY = p.y;
+			}
+			const margin = stroke.width + 10;
+			if (pt.x >= minX - margin && pt.x <= maxX + margin && pt.y >= minY - margin && pt.y <= maxY + margin) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	/* --- Pointer Events --- */
 
 	private onPointerDown(e: PointerEvent) {
@@ -415,6 +456,17 @@ export class DrawingCanvas {
 			this.isDrawing = false;
 			this.openTextInput(pt);
 			return;
+		} else if (this.mode === 'lasso') {
+			if (this.isPointInSelection(pt)) {
+				this.isDraggingSelection = true;
+				this.dragStartPoint = pt;
+			} else {
+				this.selectedStrokes.clear();
+				this.lassoPath = [pt];
+				this.isDraggingSelection = false;
+				this.redraw();
+			}
+			return;
 		}
 
 		if (this.mode === 'pen' || this.mode === 'highlighter') {
@@ -443,6 +495,25 @@ export class DrawingCanvas {
 		e.preventDefault();
 		const pt = this.eventToPoint(e);
 
+		if (this.mode === 'lasso') {
+			if (this.isDraggingSelection && this.dragStartPoint) {
+				const dx = pt.x - this.dragStartPoint.x;
+				const dy = pt.y - this.dragStartPoint.y;
+				for (const stroke of this.selectedStrokes) {
+					for (const p of stroke.points) {
+						p.x += dx;
+						p.y += dy;
+					}
+				}
+				this.dragStartPoint = pt;
+				this.redraw();
+			} else {
+				this.lassoPath.push(pt);
+				this.redraw();
+			}
+			return;
+		}
+
 		if ((this.mode === 'pen' || this.mode === 'highlighter') && this.currentStroke) {
 			this.currentStroke.points.push(pt);
 			if (this.mode === 'highlighter') {
@@ -465,6 +536,32 @@ export class DrawingCanvas {
 			return;
 		}
 		this.isDrawing = false;
+
+		if (this.mode === 'lasso') {
+			if (this.isDraggingSelection) {
+				this.isDraggingSelection = false;
+				this.pushHistory();
+				this.changeCb?.();
+			} else if (this.lassoPath.length > 2) {
+				for (const stroke of this.strokes) {
+					for (const pt of stroke.points) {
+						if (this.pointInPolygon(pt, this.lassoPath)) {
+							this.selectedStrokes.add(stroke);
+							break;
+						}
+					}
+				}
+				this.lassoPath = [];
+				this.redraw();
+			} else {
+				this.lassoPath = [];
+				this.selectedStrokes.clear();
+				this.redraw();
+			}
+			this.activePointerId = null;
+			this.restoreTemporaryEraser(e.pointerId);
+			return;
+		}
 
 		if ((this.mode === 'pen' || this.mode === 'highlighter') && this.currentStroke) {
 			if (this.currentStroke.points.length >= 2) {
@@ -753,6 +850,45 @@ export class DrawingCanvas {
 			this.drawFullStroke(stroke);
 		}
 		for (const text of this.texts) this.drawTextElement(text);
+		
+		if (this.mode === 'lasso') {
+			if (this.lassoPath.length > 0) {
+				const startPt = this.lassoPath[0];
+				if (startPt) {
+					this.ctx.beginPath();
+					this.ctx.moveTo(startPt.x * this.viewScale, startPt.y);
+					for (let i = 1; i < this.lassoPath.length; i++) {
+						const nextPt = this.lassoPath[i];
+						if (nextPt) this.ctx.lineTo(nextPt.x * this.viewScale, nextPt.y);
+					}
+					this.ctx.strokeStyle = '#2196F3';
+					this.ctx.lineWidth = 1.5;
+					this.ctx.setLineDash([5, 5]);
+					this.ctx.stroke();
+					this.ctx.setLineDash([]);
+				}
+			}
+			for (const stroke of this.selectedStrokes) {
+				let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+				for (const p of stroke.points) {
+					if (p.x < minX) minX = p.x;
+					if (p.x > maxX) maxX = p.x;
+					if (p.y < minY) minY = p.y;
+					if (p.y > maxY) maxY = p.y;
+				}
+				const margin = stroke.width + 2;
+				this.ctx.strokeStyle = 'rgba(33, 150, 243, 0.9)';
+				this.ctx.lineWidth = 2;
+				this.ctx.setLineDash([4, 4]);
+				this.ctx.strokeRect(
+					(minX - margin) * this.viewScale,
+					minY - margin,
+					(maxX - minX + margin * 2) * this.viewScale,
+					maxY - minY + margin * 2
+				);
+				this.ctx.setLineDash([]);
+			}
+		}
 	}
 
 	private drawTextElement(text: TextElement) {

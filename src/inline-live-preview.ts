@@ -37,14 +37,23 @@ class InlineHandwritingWidget extends WidgetType {
 	ignoreEvent(): boolean { return true; }
 
 	private renderPreview(root: HTMLElement): void {
+		const currentHeight = root.clientHeight;
+		if (currentHeight > 0) {
+			root.style.minHeight = `${currentHeight}px`;
+		}
 		root.empty();
 		const preview = root.createDiv({ cls: 'hwm_live-preview-image' });
 		const file = this.plugin.app.vault.getAbstractFileByPath(this.svgPath);
 		if (file instanceof TFile) {
 			const image = preview.createEl('img', { attr: { alt: this.svgPath } });
+			image.onload = () => {
+				root.style.removeProperty('min-height');
+				this.editorView?.requestMeasure();
+			};
 			image.src = this.plugin.app.vault.getResourcePath(file);
 		} else {
 			preview.createEl('span', { text: t('notice_placeholder_draw') });
+			root.style.removeProperty('min-height');
 		}
 
 		const edit = root.createEl('button', { cls: 'hwm_live-preview-edit', attr: { title: t('btn_open_editor') } });

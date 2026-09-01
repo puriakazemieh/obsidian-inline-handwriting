@@ -89,7 +89,7 @@ export class DrawingCanvas {
 
 	// Auto-expand
 	private readonly EXPAND_MARGIN = 40;
-	private readonly EXPAND_AMOUNT = 150;
+	private readonly EXPAND_AMOUNT = 1123;
 
 	private animFrameId: number | null = null;
 
@@ -193,30 +193,52 @@ export class DrawingCanvas {
 		this.ctx.scale(this.dpr, this.dpr);
 		this.redraw();
 	}
-	// Abilita scroll manuale con il dito sul canvas.
-	// touch-action resta 'none' (la penna non trigga scroll del browser),
-	// il dito scrolla il container via JS.
 	allowFingerScroll(scrollContainer: HTMLElement) {
 		let scrolling = false;
 		let startY = 0;
 		let startScroll = 0;
+		let lastY = 0;
+		let velocity = 0;
+		let rafId: number | null = null;
+		let lastTime = 0;
+
+		const applyInertia = () => {
+			if (scrolling) return;
+			if (Math.abs(velocity) > 0.5) {
+				scrollContainer.scrollTop -= velocity;
+				velocity *= 0.92;
+				rafId = requestAnimationFrame(applyInertia);
+			}
+		};
 
 		// Listener con riferimento nominale → possono essere rimossi in destroy()
 		const onDown = (e: PointerEvent) => {
 			if ((e.pointerType || 'pen') !== 'touch') return;
 			scrolling = true;
 			startY = e.clientY;
+			lastY = e.clientY;
 			startScroll = scrollContainer.scrollTop;
+			velocity = 0;
+			lastTime = performance.now();
+			if (rafId) cancelAnimationFrame(rafId);
 			this.canvas.setPointerCapture(e.pointerId);
 		};
 		const onMove = (e: PointerEvent) => {
 			if (!scrolling || (e.pointerType || 'pen') !== 'touch') return;
 			e.preventDefault();
+			const now = performance.now();
+			const dt = now - lastTime;
+			if (dt > 0) {
+				velocity = (e.clientY - lastY) / dt * 16;
+			}
+			lastY = e.clientY;
+			lastTime = now;
 			scrollContainer.scrollTop = startScroll + (startY - e.clientY);
 		};
 		const onStop = (e: PointerEvent) => {
 			if ((e.pointerType || 'pen') !== 'touch') return;
 			scrolling = false;
+			rafId = requestAnimationFrame(applyInertia);
 		};
 
 		this.canvas.addEventListener('pointerdown', onDown);
@@ -230,6 +252,7 @@ export class DrawingCanvas {
 			this.canvas.removeEventListener('pointermove', onMove);
 			this.canvas.removeEventListener('pointerup', onStop);
 			this.canvas.removeEventListener('pointerleave', onStop);
+			if (rafId) cancelAnimationFrame(rafId);
 		};
 	}
 

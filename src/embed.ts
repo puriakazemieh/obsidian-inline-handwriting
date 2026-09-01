@@ -531,10 +531,12 @@ function createPortalPanel(
 		if (inlineOpening) return;
 		inlineOpening = true;
 		const preview = ensureWrapper();
-		preview?.classList.add('hwm_hidden');
-		panel.classList.add('hwm_hidden');
+		const currentHeight = preview?.clientHeight || 0;
 		const host = activeDocument.createElement('div');
 		host.className = 'hwm_reading-inline-host';
+		if (currentHeight > 0) host.style.minHeight = `${currentHeight}px`;
+		preview?.classList.add('hwm_hidden');
+		panel.classList.add('hwm_hidden');
 		container.insertBefore(host, panel);
 		const inlineEditor = new InlineDrawingEditor(host, plugin, embedId, svgPath, sourcePath, () => {
 			inlineOpening = false;

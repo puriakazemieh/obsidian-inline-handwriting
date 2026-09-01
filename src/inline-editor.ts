@@ -23,6 +23,10 @@ export class InlineDrawingEditor {
 	) {}
 
 	async open(): Promise<void> {
+		const currentHeight = this.host.clientHeight;
+		if (currentHeight > 0) {
+			this.host.style.minHeight = `${currentHeight}px`;
+		}
 		this.host.empty();
 		this.host.addClass('hwm_editor-view', 'hwm_inline-editor');
 		const { canvas, bgModeListener } = await buildEditorUI({
@@ -45,6 +49,7 @@ export class InlineDrawingEditor {
 			this.plugin.bgModeListeners.delete(bgModeListener);
 			return;
 		}
+		this.host.style.removeProperty('min-height');
 		this.canvas = canvas;
 		this.bgModeListener = bgModeListener;
 		canvas.onChange(() => this.scheduleSave());

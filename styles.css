@@ -46,6 +46,9 @@
 	position: relative;
 	pointer-events: none;
 }
+.markdown-reading-view .internal-embed[data-hwm-decorated="1"] {
+	pointer-events: auto;
+}
 
 /* --- Container principale dell'embed --- */
 .hwm_container {
@@ -781,6 +784,8 @@
 	flex: 1;
 	overflow-y: auto;
 	overflow-x: hidden;
+	scroll-behavior: smooth;
+	-webkit-overflow-scrolling: touch;
 }
 
 /* --- Resize handle disabilitato (visibile ma non interattivo) --- */

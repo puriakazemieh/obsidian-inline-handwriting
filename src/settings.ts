@@ -86,8 +86,8 @@ function normalizeColor(color: string): string {
 
 export const DEFAULT_SETTINGS: HandwritingSettings = {
 	svgFolder: '_inline_handwriting',
-	canvasWidth: 800,
-	canvasHeight: 300,
+	canvasWidth: 794,
+	canvasHeight: 1123,
 	bgMode: 'auto',
 	debugMode: false,
 	uiLanguage: 'auto',

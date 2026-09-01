@@ -426,15 +426,17 @@ export class DrawingCanvas {
 		return false;
 	}
 
-	private onPointerDown(e: PointerEvent) {
-		const ptype = e.pointerType || 'pen';
-		const stylusEraser = this.isStylusEraserButton(e);
-		if (stylusEraser) {
-			this.activateStylusEraser(e.pointerId);
-		} else {
-			this.restoreTemporaryEraser(e.pointerId);
-		}
+	/* --- Pointer Events --- */
 
+	private onPointerDown(e: PointerEvent) {
+		// pointerType vuoto ("") = evento degradato da Android → trattato come penna
+		const ptype = e.pointerType || 'pen';
+		// Samsung S Pen and most styluses expose their side/eraser button as a
+		// secondary (or eraser) pointer button. Switch to eraser immediately.
+		const stylusEraser = this.isStylusEraserButton(e);
+		if (stylusEraser) this.activateStylusEraser(e.pointerId);
+
+		// Su mobile: il dito non disegna mai
 		if (this.mobileMode && ptype === 'touch' && !stylusEraser) {
 			this.debugFn?.('👆 Dito sul canvas');
 			e.stopPropagation();
@@ -450,7 +452,6 @@ export class DrawingCanvas {
 		this.activePointerId = e.pointerId;
 		this.isDrawing = true;
 		const pt = this.eventToPoint(e);
-
 		if (this.mode === 'text') {
 			this.isDrawing = false;
 			this.openTextInput(pt);
@@ -476,19 +477,20 @@ export class DrawingCanvas {
 				opacity: this.mode === 'highlighter' ? 0.32 : 1,
 			};
 		} else {
+			// Inizio drag gomma: reset flag
 			this.eraserChanged = false;
 			this.eraseAt(pt);
 		}
 	}
 
 	private onPointerMove(e: PointerEvent) {
+		// Su mobile: ignora il dito
 		const stylusEraser = this.isStylusEraserButton(e);
 		if (this.mobileMode && (e.pointerType || 'pen') === 'touch' && !stylusEraser) return;
-		if (stylusEraser) {
-			this.activateStylusEraser(e.pointerId);
-		} else {
-			this.restoreTemporaryEraser(null); // Ignore pointerId check here, we want it to restore immediately on release
-		}
+		// Samsung can report the side button while the S Pen is hovering, before
+		// pointerdown. Switching here makes the very next tap an erase gesture.
+		if (stylusEraser) this.activateStylusEraser(e.pointerId);
+		else if (!this.isDrawing) this.restoreTemporaryEraser(e.pointerId);
 		if (!this.isDrawing) return;
 		e.preventDefault();
 		const pt = this.eventToPoint(e);
@@ -527,11 +529,10 @@ export class DrawingCanvas {
 	}
 
 	private onPointerUp(e: PointerEvent) {
-		const stylusEraser = this.isStylusEraserButton(e);
 		// Finger scrolling never sets isDrawing, so this also safely handles the
 		// Android case where an S Pen side-button release is reported as touch.
 		if (!this.isDrawing) {
-			if (!stylusEraser) this.restoreTemporaryEraser(e.pointerId);
+			this.restoreTemporaryEraser(e.pointerId);
 			return;
 		}
 		this.isDrawing = false;
@@ -558,7 +559,7 @@ export class DrawingCanvas {
 				this.redraw();
 			}
 			this.activePointerId = null;
-			if (!stylusEraser) this.restoreTemporaryEraser(e.pointerId);
+			this.restoreTemporaryEraser(e.pointerId);
 			return;
 		}
 
@@ -576,7 +577,7 @@ export class DrawingCanvas {
 			this.changeCb?.();
 		}
 		this.activePointerId = null;
-		if (!stylusEraser) this.restoreTemporaryEraser(e.pointerId);
+		this.restoreTemporaryEraser(e.pointerId);
 	}
 
 	private openTextInput(pt: Point) {
@@ -690,8 +691,8 @@ export class DrawingCanvas {
 		this.setMode('eraser');
 	}
 
-	private restoreTemporaryEraser(pointerId: number | null) {
-		if (pointerId !== null && this.temporaryEraserPointerId !== pointerId) return;
+	private restoreTemporaryEraser(pointerId: number) {
+		if (this.temporaryEraserPointerId !== pointerId) return;
 		const previousMode = this.temporaryEraserPreviousMode;
 		this.temporaryEraserPointerId = null;
 		this.temporaryEraserPreviousMode = null;

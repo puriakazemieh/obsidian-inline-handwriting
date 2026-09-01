@@ -486,14 +486,26 @@ export class DrawingCanvas {
 	private onPointerMove(e: PointerEvent) {
 		// Su mobile: ignora il dito
 		const stylusEraser = this.isStylusEraserButton(e);
-		if (this.mobileMode && (e.pointerType || 'pen') === 'touch' && !stylusEraser) return;
-		// Samsung can report the side button while the S Pen is hovering, before
-		// pointerdown. Switching here makes the very next tap an erase gesture.
+		const ptype = e.pointerType || 'pen';
+		if (this.mobileMode && ptype === 'touch' && !stylusEraser) {
+			// Bypass finger rejection if this is the active drawing pointer
+			if (!(this.isDrawing && e.pointerId === this.activePointerId)) {
+				return;
+			}
+		}
+
 		if (stylusEraser) this.activateStylusEraser(e.pointerId);
 		else if (!this.isDrawing) this.restoreTemporaryEraser(e.pointerId);
-		if (!this.isDrawing) return;
-		e.preventDefault();
+		
 		const pt = this.eventToPoint(e);
+		if (!this.isDrawing) {
+			if (this.mode === 'eraser' && stylusEraser) {
+				this.eraseAt(pt);
+			}
+			return;
+		}
+		
+		e.preventDefault();
 
 		if (this.mode === 'lasso') {
 			if (this.isDraggingSelection && this.dragStartPoint) {
@@ -677,7 +689,10 @@ export class DrawingCanvas {
 	}
 
 	private activateStylusEraser(pointerId = this.activePointerId) {
-		if (this.temporaryEraserPreviousMode === null) this.temporaryEraserPreviousMode = this.mode;
+		if (this.temporaryEraserPreviousMode === null) {
+			this.temporaryEraserPreviousMode = this.mode;
+			this.eraserChanged = false;
+		}
 		if (pointerId !== null) this.temporaryEraserPointerId = pointerId;
 		if (this.mode === 'eraser') return;
 		// If the side button is pressed mid-stroke, finish the written portion
@@ -697,7 +712,13 @@ export class DrawingCanvas {
 		this.temporaryEraserPointerId = null;
 		this.temporaryEraserPreviousMode = null;
 		this.stylusContextHint = null;
-		if (previousMode) this.setMode(previousMode);
+		if (previousMode) {
+			if (this.eraserChanged) {
+				this.pushHistory();
+				this.changeCb?.();
+			}
+			this.setMode(previousMode);
+		}
 	}
 
 	private animateHeight(targetLogicalH: number) {

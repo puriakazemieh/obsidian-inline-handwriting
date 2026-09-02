@@ -30,6 +30,7 @@ export default class HandwritingPlugin extends Plugin {
 	public embedActions = new Map<string, {
 		expand:     () => void;
 		collapse:   () => void;
+		edit?:      () => void;
 		container:  HTMLElement;
 		sourcePath: string;
 	}>();
@@ -51,7 +52,8 @@ export default class HandwritingPlugin extends Plugin {
 		// Applica la lingua interfaccia salvata (o la lingua di sistema se 'auto')
 		setLocale(this.settings.uiLanguage);
 
-		// Rileva cambio tema Obsidian. Doppio meccanismo per massima compatibilità Android:
+
+// Rileva cambio tema Obsidian. Doppio meccanismo per massima compatibilità Android:
 		// - css-change: evento Obsidian garantito al cambio tema (più affidabile su alcuni WebView Android)
 		// - MutationObserver: fallback per cambii di classe body da plugin terzi o versioni vecchie
 		this.registerEvent(
@@ -153,6 +155,9 @@ export default class HandwritingPlugin extends Plugin {
 		// Migrazione: 'custom' non esiste più → 'auto'
 		if ((this.settings.bgMode as string) === 'custom') {
 			this.settings.bgMode = 'auto';
+		}
+		if (this.settings.canvasHeight < 500) {
+			this.settings.canvasHeight = 1123;
 		}
 		// This fork must be able to run beside HandTranscriptMd. Move its fresh
 		// default storage away from the upstream plugin's _handwriting folder once.

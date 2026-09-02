@@ -151,118 +151,77 @@ export async function buildEditorUI(opts: {
 	const isDark   = resolveIsDark(plugin.settings.bgMode);
 	const bgColor  = getEffectiveBgColor(plugin.settings);
 	const lineColor = getEffectiveLineColor(plugin.settings);
-	// Sfondo via CSS var: background-color: var(--hwm-bg) in .hwm_editor-view
+	
 	el.setCssProps({ '--hwm-bg': bgColor });
 
-	// --- Top bar: contiene la toolbar centrata e il bottone X ---
-	const topbar = el.createDiv({ cls: 'hwm_editor-topbar hwm_editor-topbar--modal' });
-	if (isDark) topbar.classList.add('hwm_editor-topbar--dark');
+	// --- 2. FLOATING TOOL BELT ---
+	const toolBelt = el.createDiv({ cls: 'hwm_tool-belt' });
 
-	const toolbar = topbar.createDiv({ cls: 'hwm_toolbar hwm_editor-toolbar' });
-	if (isDark) toolbar.classList.add('hwm_toolbar--dark');
+	// History Capsule
+	const historyCap = toolBelt.createDiv({ cls: 'hwm_capsule' });
+	const undoBtn = mkBtn(historyCap, 'rotate-ccw', 'btn_undo');
+	undoBtn.classList.add('hwm_tool-btn');
+	const redoBtn = mkBtn(historyCap, 'rotate-cw', 'btn_redo');
+	redoBtn.classList.add('hwm_tool-btn');
 
-	// Penna / Gomma
-	const penBtn    = mkBtn(toolbar, 'pencil', 'btn_pen');
-	penBtn.classList.add('hwm_active', 'hwm_pen-btn');
-	const eraserBtn = mkBtn(toolbar, 'eraser', 'btn_eraser');
-	eraserBtn.classList.add('hwm_eraser-btn');
-	const highlighterBtn = mkBtn(toolbar, 'highlighter', 'btn_pen');
-	setButtonHelp(highlighterBtn, 'Highlighter');
-	highlighterBtn.classList.add('hwm_highlighter-btn');
-	const textBtn = mkBtn(toolbar, 'text-cursor-input', 'btn_pen');
-	setButtonHelp(textBtn, 'Type text');
-	textBtn.classList.add('hwm_text-btn');
-	const lassoBtn = mkBtn(toolbar, 'mouse-pointer-2', 'btn_pen');
-	setButtonHelp(lassoBtn, 'Select & Move');
-	lassoBtn.classList.add('hwm_lasso-btn');
-	const strokeSize = toolbar.createDiv({ cls: 'hwm_toolbar-group hwm_stroke-size' });
-	const strokeSizeValue = strokeSize.createEl('span', { cls: 'hwm_stroke-size-value', text: '2 Px' });
-	const strokeSizeInput = strokeSize.createEl('input', {
-		cls: 'hwm_stroke-size-range', attr: { type: 'range', min: '1', max: '24', value: '2', title: 'Pen size', 'aria-label': 'Pen size' }
-	});
-	toolbar.createDiv({ cls: 'hwm_separator' });
+	toolBelt.createDiv({ cls: 'hwm_belt-separator' });
 
-	// Palette colori — valori importati da settings.ts (unica fonte di verità).
-	// let (non const) perché il bgModeListener aggiorna la palette al cambio tema.
+	// Colors Capsule
 	let colors = getQuickPalette(plugin.settings, isDark);
-	let activeColorIdx = 0; // indice del pallino attivo, usato per aggiornare setColor al cambio tema
-	const colorWrap = toolbar.createDiv({ cls: 'hwm_colors' });
+	let activeColorIdx = 0;
+	const colorsCap = toolBelt.createDiv({ cls: 'hwm_capsule hwm_capsule--colors' });
 	const colorBtns: HTMLElement[] = [];
-	const addColorButton = (c: string): HTMLElement => {
-		const btn = colorWrap.createEl('button', {
-			cls: 'hwm_color-btn',
-			attr: { type: 'button', title: c, 'aria-label': `Quick colour ${c}` }
-		});
-		// Colore via CSS var: background-color: var(--hwm-btn-color) in .hwm_color-btn
-		// Le dimensioni forzate sono ora nel CSS con !important (no più stili inline)
-		btn.setCssProps({ '--hwm-btn-color': c });
+	const addColorButton = (c: string): HTMLInputElement => {
+		const btn = colorsCap.createEl('input', {
+			cls: 'hwm_color-swatch',
+			attr: { type: 'color', title: c, 'aria-label': `Quick colour ${c}` }
+		}) as HTMLInputElement;
+		btn.value = c;
 		colorBtns.push(btn);
 		return btn;
 	};
 	for (const c of colors) addColorButton(c);
 	colorBtns[0]?.classList.add('hwm_active');
-	const paletteBtn = mkBtn(toolbar, 'palette', 'btn_pen');
-	setButtonHelp(paletteBtn, 'Add quick colour');
-	paletteBtn.classList.add('hwm_palette-btn');
+	
+	
+	toolBelt.createDiv({ cls: 'hwm_belt-separator' });
 
-	// Appearance controls deliberately live in the same visual toolbar as the tools.
-	const appearanceControls = toolbar.createDiv({ cls: 'hwm_toolbar-group hwm_appearance-controls' });
-	const backgroundPicker = appearanceControls.createEl('input', {
-		cls: 'hwm_background-picker', attr: { type: 'color', title: 'Background colour' }
-	});
-	const patternSelect = appearanceControls.createEl('select', {
-		cls: 'hwm_pattern-select', attr: { title: 'Paper style', 'aria-label': 'Paper style' }
-	});
-	const spacingInput = appearanceControls.createEl('input', {
-		cls: 'hwm_spacing-input', attr: { type: 'number', min: '12', max: '120', step: '1', title: 'Line spacing', 'aria-label': 'Line spacing' }
-	});
-	spacingInput.placeholder = 'Px';
-	(['ruled', 'grid', 'dots', 'blank'] as BackgroundPattern[]).forEach(pattern => {
-		const labels: Record<BackgroundPattern, string> = { ruled: 'Lines', grid: 'Grid', dots: 'Dots', blank: 'Blank' };
-		patternSelect.createEl('option', { value: pattern, text: labels[pattern] });
-	});
-	toolbar.createDiv({ cls: 'hwm_separator' });
+	// Tools Capsule
+	const toolsCap = toolBelt.createDiv({ cls: 'hwm_capsule' });
+	const penBtn = mkBtn(toolsCap, 'pencil', 'btn_pen');
+	penBtn.classList.add('hwm_tool-btn', 'hwm_active');
+	
+	const lassoBtn = mkBtn(toolsCap, 'mouse-pointer-2', 'btn_pen');
+	setButtonHelp(lassoBtn, 'Select & Move');
+	lassoBtn.classList.add('hwm_tool-btn');
+	
+	const highlighterBtn = mkBtn(toolsCap, 'highlighter', 'btn_pen');
+	setButtonHelp(highlighterBtn, 'Highlighter');
+	highlighterBtn.classList.add('hwm_tool-btn');
+	
+	const eraserBtn = mkBtn(toolsCap, 'eraser', 'btn_eraser');
+	eraserBtn.classList.add('hwm_tool-btn');
+	
+	const textBtn = mkBtn(toolsCap, 'type', 'btn_pen');
+	setButtonHelp(textBtn, 'Type text');
+	textBtn.classList.add('hwm_tool-btn');
 
-	// Undo / Redo / Clear
-	const undoBtn  = mkBtn(toolbar, 'rotate-ccw', 'btn_undo');
-	undoBtn.classList.add('hwm_undo-btn', 'hwm_action-btn');
-	undoBtn.createEl('span', { cls: 'hwm_btn-label', text: 'Undo' });
-	const redoBtn  = mkBtn(toolbar, 'rotate-cw', 'btn_redo');
-	redoBtn.classList.add('hwm_redo-btn', 'hwm_action-btn');
-	redoBtn.createEl('span', { cls: 'hwm_btn-label', text: 'Redo' });
-	const clearBtn = mkBtn(toolbar, 'trash', 'btn_clear');
-	clearBtn.classList.add('hwm_clear-btn', 'hwm_action-btn');
-	clearBtn.createEl('span', { cls: 'hwm_btn-label', text: 'Clear' });
-	toolbar.createDiv({ cls: 'hwm_separator' });
+	const moreBtn = mkBtn(toolsCap, 'more-horizontal', 'btn_pen');
+	setButtonHelp(moreBtn, 'More Actions');
+	moreBtn.classList.add('hwm_tool-btn');
 
-	// Salva / Elimina
-	const saveBtn    = mkBtn(toolbar, 'save', 'btn_save');
-	saveBtn.classList.add('hwm_save-btn', 'hwm_action-btn');
-	saveBtn.createEl('span', { cls: 'hwm_btn-label', text: 'Save' });
-	const deleteBtn  = mkBtn(toolbar, 'file-x', 'btn_delete');
-	deleteBtn.classList.add('hwm_delete-btn', 'hwm_action-btn');
-	deleteBtn.createEl('span', { cls: 'hwm_btn-label', text: 'Delete' });
+	// --- 3. CANVAS AREA ---
+	const canvasWrap = el.createDiv({ cls: 'hwm_main-canvas-area' });
+	const scrollWrap = canvasWrap.createDiv({ cls: 'hwm_editor-scroll' });
+	const canvasInnerWrap = scrollWrap.createDiv({ cls: 'hwm_canvas-wrap' });
 
-	// Bottone chiudi (X): posizionato a destra via CSS absolute
-	const closeBtn = mkBtn(topbar, 'x', 'btn_close');
-	closeBtn.classList.add('hwm_close-btn');
-	closeBtn.addEventListener('click', () => { void opts.onClose(); });
-	// Uses the same native colour input as the paper-background control.
-	const quickColorPicker = topbar.createEl('input', { cls: 'hwm_quick-colour-picker', attr: { type: 'color', 'aria-label': 'Quick pen colour' } });
-
-	// --- Scroll container e canvas ---
-	const scrollWrap  = el.createDiv({ cls: 'hwm_editor-scroll' });
-	const canvasWrap  = scrollWrap.createDiv({ cls: 'hwm_canvas-wrap' });
-
-	// Carica i tratti dal file SVG
 	const { strokes, texts, canvasWidth: savedW, canvasHeight: savedH, background } = await loadStrokesFromSvg(opts.svgPath, plugin);
 	const { canvasWidth, canvasHeight } = plugin.settings;
-	// Usa le dimensioni salvate nel viewBox per preservare i tratti di sessioni precedenti più larghe
 	const w = savedW ?? canvasWidth;
 	const h = savedH ?? canvasHeight;
 	const debugFn = plugin.settings.debugMode ? (msg: string) => new Notice(msg, 3000) : null;
 
-	const canvas = new DrawingCanvas(canvasWrap, w, h, canvasHeight, isMobile, debugFn);
+	const canvas = new DrawingCanvas(canvasInnerWrap, w, h, canvasHeight, isMobile, debugFn);
 	canvas.setBackground(
 		background?.color ?? bgColor,
 		background?.lineColor ?? lineColor,
@@ -270,8 +229,7 @@ export async function buildEditorUI(opts: {
 		background?.spacing,
 	);
 	canvas.setColor(colors[0]!);
-	// Su mobile: dito = scroll manuale dell'area che scorre davvero. For an
-	// inline editor this is the Obsidian note itself, not the drawing widget.
+
 	if (isMobile) {
 		let scrollTarget: HTMLElement = scrollWrap;
 		let parent = el.parentElement;
@@ -286,7 +244,6 @@ export async function buildEditorUI(opts: {
 		canvas.allowFingerScroll(scrollTarget);
 	}
 
-	// Carica i tratti con remapping colori al tema corrente
 	if (strokes.length > 0) {
 		const remapped = strokes.map(s => ({
 			...s, color: remapStrokeColor(s.color, plugin.settings.bgMode)
@@ -294,46 +251,157 @@ export async function buildEditorUI(opts: {
 		canvas.loadStrokes(remapped, texts);
 	}
 
-	// Setup specifico della classe chiamante (ResizeObserver su Android, rAF su Desktop)
 	opts.afterCanvas(canvas, scrollWrap, canvasWidth);
 
-	// Resize handle (visibile ma non interattivo)
 	const handle = scrollWrap.createDiv({ cls: 'hwm_resize-handle hwm_resize-handle--disabled' });
 	handle.createEl('span', { text: '⋯' });
 	handle.classList.toggle('hwm_resize-handle--dark', isDark);
 
-	// Listener bgMode: aggiorna toolbar, pallini colore e sfondo canvas al cambio tema.
-	// Registrato da buildEditorUI e restituito alla classe per poterlo rimuovere in onClose().
+	// --- 4. MORE ACTIONS OVERLAY (BOTTOM SHEET) ---
+	const overlay = el.createDiv({ cls: 'hwm_more-overlay' });
+	const sheet = overlay.createDiv({ cls: 'hwm_more-sheet' });
+	sheet.createDiv({ cls: 'hwm_sheet-drag-handle' });
+
+	
+
+	// Line Thickness
+	const thickSec = sheet.createDiv({ cls: 'hwm_sheet-section' });
+	const thickHeader = thickSec.createDiv({ cls: 'hwm_sheet-header' });
+	thickHeader.createSpan({ text: 'Pen Thickness', cls: 'hwm_sheet-title' });
+	const strokeSizeValue = thickHeader.createSpan({ text: '2', cls: 'hwm_sheet-value' });
+	
+	const thickBox = thickSec.createDiv({ cls: 'hwm_sheet-control-box' });
+	const decThick = thickBox.createEl('button', { cls: 'hwm_sheet-stepper' }); setIcon(decThick, 'minus');
+	const strokeSizeInput = thickBox.createEl('input', { cls: 'hwm_sheet-range', attr: { type: 'range', min: '1', max: '24', value: '2' } });
+	const incThick = thickBox.createEl('button', { cls: 'hwm_sheet-stepper' }); setIcon(incThick, 'plus');
+	
+	decThick.addEventListener('click', () => {
+		strokeSizeInput.value = Math.max(1, parseInt(strokeSizeInput.value) - 1).toString();
+		strokeSizeInput.dispatchEvent(new Event('input'));
+	});
+	strokeSizeInput.addEventListener('input', () => { strokeSizeValue.textContent = strokeSizeInput.value; });
+	incThick.addEventListener('click', () => {
+		strokeSizeInput.value = Math.min(24, parseInt(strokeSizeInput.value) + 1).toString();
+		strokeSizeInput.dispatchEvent(new Event('input'));
+	});
+	strokeSizeInput.addEventListener('input', () => { strokeSizeValue.textContent = strokeSizeInput.value; });
+
+		const applyAppearance = () => canvas.setBackground(
+		currentBgColor, canvas.getLineColor(), currentPattern, Number(spacingInput.value)
+	);
+
+	// Canvas Pattern
+	const patSec = sheet.createDiv({ cls: 'hwm_sheet-section' });
+	const patHeader = patSec.createDiv({ cls: 'hwm_sheet-header' });
+	patHeader.createSpan({ text: 'Canvas Pattern', cls: 'hwm_sheet-title' });
+	const patGrid = patSec.createDiv({ cls: 'hwm_pattern-grid' });
+	const patternBtns: Record<BackgroundPattern, HTMLElement> = {
+		ruled: patGrid.createEl('button', { cls: 'hwm_pattern-btn', text: 'Lined' }),
+		grid: patGrid.createEl('button', { cls: 'hwm_pattern-btn', text: 'Grid' }),
+		dots: patGrid.createEl('button', { cls: 'hwm_pattern-btn', text: 'Dots' }),
+		blank: patGrid.createEl('button', { cls: 'hwm_pattern-btn', text: 'Plain' })
+	};
+	let currentPattern = canvas.getBackgroundPattern();
+	if(patternBtns[currentPattern]) patternBtns[currentPattern].classList.add('hwm_active');
+
+		// Pattern Spacing
+	const bgSpaceSec = sheet.createDiv({ cls: 'hwm_sheet-section' });
+	const spaceHeader = bgSpaceSec.createDiv({ cls: 'hwm_sheet-header' });
+	spaceHeader.createSpan({ text: 'Pattern Spacing', cls: 'hwm_sheet-title' });
+	const spacingValue = spaceHeader.createSpan({ text: `${canvas.getLineSpacing()}px`, cls: 'hwm_sheet-value-text' });
+	
+	const spaceBox = bgSpaceSec.createDiv({ cls: 'hwm_sheet-control-box' });
+	const decSpace = spaceBox.createEl('button', { cls: 'hwm_sheet-stepper' }); setIcon(decSpace, 'minus');
+	const spacingInput = spaceBox.createEl('input', { cls: 'hwm_sheet-range', attr: { type: 'range', min: '12', max: '120', step: '4', value: String(canvas.getLineSpacing()) } });
+	const incSpace = spaceBox.createEl('button', { cls: 'hwm_sheet-stepper' }); setIcon(incSpace, 'plus');
+
+	decSpace.addEventListener('click', () => {
+		spacingInput.value = Math.max(12, parseInt(spacingInput.value) - 4).toString();
+		spacingInput.dispatchEvent(new Event('input'));
+	});
+	spacingInput.addEventListener('input', () => { spacingValue.textContent = `${spacingInput.value}px`; });
+	incSpace.addEventListener('click', () => {
+		spacingInput.value = Math.min(120, parseInt(spacingInput.value) + 4).toString();
+		spacingInput.dispatchEvent(new Event('input'));
+	});
+	spacingInput.addEventListener('input', () => { spacingValue.textContent = `${spacingInput.value}px`; });
+
+	// Background Color
+	const bgSec = sheet.createDiv({ cls: 'hwm_sheet-section' });
+	const bgHeader = bgSec.createDiv({ cls: 'hwm_sheet-header' });
+	bgHeader.createSpan({ text: 'Background Color', cls: 'hwm_sheet-title' });
+	const bgBox = bgSec.createDiv({ cls: 'hwm_sheet-control-box' });
+	
+		let currentBgColor = canvas.getBgColor();
+	const bgColors = ['#131313', '#1e1e1e', '#ffffff', '#f4ecd8', '#2d2d2d'];
+	const bgBtns: HTMLInputElement[] = [];
+	bgColors.forEach(c => {
+		const btn = bgBox.createEl('input', { cls: 'hwm_color-swatch', attr: { type: 'color' } }) as HTMLInputElement;
+		btn.value = c;
+		btn.addEventListener('click', (e) => {
+			if (!btn.classList.contains('hwm_active')) {
+				e.preventDefault();
+				bgBtns.forEach(b => b.classList.remove('hwm_active'));
+				btn.classList.add('hwm_active');
+				currentBgColor = btn.value;
+				applyAppearance();
+			} else {
+				try { btn.showPicker(); } catch (err) {}
+			}
+		});
+		btn.addEventListener('touchend', (e) => {
+			if (btn.classList.contains('hwm_active')) {
+				try { btn.showPicker(); } catch (err) {}
+			}
+		});
+		btn.addEventListener('input', () => {
+			currentBgColor = btn.value;
+			applyAppearance();
+		});
+		bgBtns.push(btn);
+	});
+
+	sheet.createDiv({ cls: 'hwm_sheet-divider', attr: { style: 'margin: 16px 0;' } });
+
+	const bottomRow = sheet.createDiv({ cls: 'hwm_sheet-grid-3' });
+	
+	const closeSheetBtn = bottomRow.createEl('button', { cls: 'hwm_sheet-btn hwm_sheet-btn--secondary' });
+	const closeIcon = closeSheetBtn.createSpan(); setIcon(closeIcon, 'chevron-down');
+	closeSheetBtn.createSpan({ text: 'Close' });
+
+	const clearBtn = bottomRow.createEl('button', { cls: 'hwm_sheet-btn hwm_sheet-btn--secondary' });
+	const clearIcon = clearBtn.createSpan(); setIcon(clearIcon, 'eraser');
+	clearBtn.createSpan({ text: 'Clear' });
+
+	const deleteBtn = bottomRow.createEl('button', { cls: 'hwm_sheet-btn hwm_sheet-btn--danger' });
+	const delIcon = deleteBtn.createSpan(); setIcon(delIcon, 'trash-2');
+	deleteBtn.createSpan({ text: 'Delete' });
+
+	closeSheetBtn.addEventListener('click', () => { overlay.classList.remove('hwm_visible'); });
+	clearBtn.addEventListener('click', () => canvas.clear());
+	deleteBtn.addEventListener('click', () => { void opts.doDelete(); });
+	
+	moreBtn.addEventListener('click', () => { overlay.classList.add('hwm_visible'); });
+	overlay.addEventListener('click', (e) => { if(e.target === overlay) overlay.classList.remove('hwm_visible'); });
+
 	const bgModeListener = (bgMode: string) => {
 		const dark = resolveIsDark(bgMode);
-		topbar.classList.toggle('hwm_editor-topbar--dark', dark);
-		toolbar.classList.toggle('hwm_toolbar--dark', dark);
-		handle.classList.toggle('hwm_resize-handle--dark', dark);
-		// Sfondo via CSS var (no stile inline)
 		el.setCssProps({ '--hwm-bg': getEffectiveBgColor(plugin.settings) });
-		// Aggiorna palette e colore attivo al nuovo tema
 		const newColors = getQuickPalette(plugin.settings, dark);
-		colors = [...newColors]; // aggiorna il riferimento usato dai click handler
+		colors = [...newColors];
 		colorBtns.forEach((btn, i) => {
-			btn.setCssProps({ '--hwm-btn-color': newColors[i] ?? '' });
+			if(btn instanceof HTMLInputElement) btn.value = newColors[i] ?? '';
 			btn.setAttribute('title', newColors[i] ?? '');
 		});
-		canvas.setColor(colors[activeColorIdx]!); // aggiorna colore penna attivo
-		// Aggiorna sfondo e righe nel canvas
+		canvas.setColor(colors[activeColorIdx]!);
 		canvas.setBackground(canvas.getBgColor(), canvas.getLineColor(), canvas.getBackgroundPattern(), canvas.getLineSpacing());
-		// Remap colori tratti al nuovo tema (dark ↔ light)
 		canvas.remapStrokeColors(c => remapStrokeColor(c, bgMode as BgMode));
 	};
 	plugin.bgModeListeners.add(bgModeListener);
 
-	// Auto-scroll quando il canvas si espande, ma solo se non si sta disegnando.
-	// Durante il disegno, lo scroll sposterebbe il canvas e le coordinate salterebbero.
 	canvas.onResize(() => {
 		if (!canvas.isPointerDown()) scrollWrap.scrollTop = scrollWrap.scrollHeight;
 	});
-
-	// --- Event handlers ---
-	const cv = canvas;
 
 	const updateToolButtons = (mode: 'pen' | 'eraser' | 'highlighter' | 'text' | 'lasso') => {
 		penBtn.classList.toggle('hwm_active', mode === 'pen');
@@ -342,21 +410,23 @@ export async function buildEditorUI(opts: {
 		textBtn.classList.toggle('hwm_active', mode === 'text');
 		lassoBtn.classList.toggle('hwm_active', mode === 'lasso');
 	};
-	penBtn.addEventListener('click', () => { cv.setMode('pen'); });
-	eraserBtn.addEventListener('click', () => { cv.setMode('eraser'); });
-	highlighterBtn.addEventListener('click', () => { cv.setMode('highlighter'); });
-	textBtn.addEventListener('click', () => { cv.setMode('text'); });
-	lassoBtn.addEventListener('click', () => { cv.setMode('lasso'); });
+	penBtn.addEventListener('click', () => { canvas.setMode('pen'); });
+	eraserBtn.addEventListener('click', () => { canvas.setMode('eraser'); });
+	highlighterBtn.addEventListener('click', () => { canvas.setMode('highlighter'); });
+	textBtn.addEventListener('click', () => { canvas.setMode('text'); });
+	lassoBtn.addEventListener('click', () => { canvas.setMode('lasso'); });
+
 	strokeSizeInput.addEventListener('input', () => {
-		strokeSizeValue.setText(`${strokeSizeInput.value} Px`);
-		cv.setLineWidth(Number(strokeSizeInput.value));
+		strokeSizeValue.setText(strokeSizeInput.value);
+		canvas.setLineWidth(Number(strokeSizeInput.value));
 	});
-	cv.onModeChange(updateToolButtons);
+	canvas.onModeChange(updateToolButtons);
+
 	const selectColor = (index: number) => {
 		colorBtns.forEach(b => b.classList.remove('hwm_active'));
 		colorBtns[index]?.classList.add('hwm_active');
 		activeColorIdx = index;
-		cv.setColor(colors[index]!);
+		canvas.setColor(colors[index]!);
 	};
 	const applyQuickColor = (index: number, color: string) => {
 		if (index < 5) {
@@ -367,86 +437,59 @@ export async function buildEditorUI(opts: {
 			plugin.settings.customPalette[index - 5] = color;
 		}
 		colors[index] = color;
-		colorBtns[index]?.setCssProps({ '--hwm-btn-color': color });
+		if (colorBtns[index]) colorBtns[index].style.backgroundColor = color;
 		colorBtns[index]?.setAttribute('title', color);
 		selectColor(index);
 		void plugin.saveSettings();
 	};
-	let quickPickerTarget: number | null = null;
-	const openQuickColourPicker = (index: number | null) => {
-		quickPickerTarget = index;
-		quickColorPicker.value = index === null ? '#f59e0b' : colors[index]!;
-		// showPicker is the native, user-gesture-aware path used by Chromium/WebView.
-		// Old Obsidian WebViews fall back to the same click behaviour as the paper picker.
-		try { quickColorPicker.showPicker(); } catch { quickColorPicker.click(); }
-	};
-	quickColorPicker.addEventListener('change', () => {
-		const color = quickColorPicker.value;
-		const index = quickPickerTarget;
-		quickPickerTarget = null;
-		if (index !== null) { applyQuickColor(index, color); return; }
-		if (colors.includes(color)) { new Notice('This colour is already in the quick palette.'); return; }
-		if (plugin.settings.customPalette.length >= 5) { new Notice('Quick colour palette is limited to five extra colours.'); return; }
-		plugin.settings.customPalette.push(color);
-		colors.push(color);
-		const btn = addColorButton(color);
-		bindColorButton(btn);
-		selectColor(colors.length - 1);
-		void plugin.saveSettings();
-	});
-	const editQuickColor = (index: number) => openQuickColourPicker(index);
-	let lastColourTap: { button: HTMLElement; at: number } | null = null;
-	const bindColorButton = (btn: HTMLElement) => {
-		btn.addEventListener('click', () => {
+		const bindColorButton = (btn: HTMLElement) => {
+		const inputBtn = btn as HTMLInputElement;
+		inputBtn.addEventListener('click', (e) => {
 			const index = colorBtns.indexOf(btn);
-			if (btn.classList.contains('hwm_active')) {
-				editQuickColor(index);
-			} else {
+			if (!btn.classList.contains('hwm_active')) {
+				e.preventDefault();
 				selectColor(index);
+			} else {
+				try { inputBtn.showPicker(); } catch (err) {}
 			}
 		});
-		// Android WebView does not consistently emit dblclick for a touch/pen tap.
-		// Kept dblclick listener just in case some users double click out of habit.
-		btn.addEventListener('dblclick', event => {
-			event.preventDefault();
-			event.stopPropagation();
-			editQuickColor(colorBtns.indexOf(btn));
-		});
-		// Android WebView does not consistently emit dblclick for a touch/pen tap.
-		// Detect a second tap here while the event still counts as a user gesture.
-		btn.addEventListener('pointerup', event => {
-			if (event.pointerType === 'mouse') return;
-			const now = Date.now();
-			if (lastColourTap?.button === btn && now - lastColourTap.at < 500) {
-				event.preventDefault();
-				event.stopPropagation();
-				lastColourTap = null;
-				editQuickColor(colorBtns.indexOf(btn));
-				return;
+		// Mobile Safari / iOS touch event support for opening color picker
+		inputBtn.addEventListener('touchend', (e) => {
+			if (btn.classList.contains('hwm_active')) {
+				try { inputBtn.showPicker(); } catch (err) {}
 			}
-			lastColourTap = { button: btn, at: now };
+		});
+		inputBtn.addEventListener('input', () => {
+			const index = colorBtns.indexOf(btn);
+			applyQuickColor(index, inputBtn.value);
 		});
 	};
 	colorBtns.forEach(bindColorButton);
-	paletteBtn.addEventListener('click', () => openQuickColourPicker(null));
 
-	backgroundPicker.value = canvas.getBgColor();
-	patternSelect.value = canvas.getBackgroundPattern();
-	spacingInput.value = String(canvas.getLineSpacing());
-	const applyAppearance = () => canvas.setBackground(
-		backgroundPicker.value, canvas.getLineColor(), patternSelect.value as BackgroundPattern, Number(spacingInput.value),
-	);
-	backgroundPicker.addEventListener('input', applyAppearance);
-	patternSelect.addEventListener('change', applyAppearance);
-	spacingInput.addEventListener('change', applyAppearance);
-	undoBtn.addEventListener('click', () => cv.undo());
-	redoBtn.addEventListener('click', () => cv.redo());
-	clearBtn.addEventListener('click', () => cv.clear());
-	saveBtn.addEventListener('click', () => { void opts.doSave().then(() => new Notice(t('notice_saved'))); });
-	deleteBtn.addEventListener('click', () => { void opts.doDelete(); });
+		spacingInput.addEventListener('input', () => {
+		spacingValue.setText(spacingInput.value);
+		applyAppearance();
+	});
+	
+	Object.entries(patternBtns).forEach(([pat, btn]) => {
+		btn.addEventListener('click', () => {
+			Object.values(patternBtns).forEach(b => b.classList.remove('hwm_active'));
+			btn.classList.add('hwm_active');
+			currentPattern = pat as BackgroundPattern;
+			applyAppearance();
+		});
+	});
 
+	undoBtn.addEventListener('click', () => canvas.undo());
+	redoBtn.addEventListener('click', () => canvas.redo());
+		
+	const onSave = () => { void opts.doSave().then(() => new Notice(t('notice_saved'))); };
+		
+	
+	
 	return { canvas, bgModeListener };
 }
+
 
 /* =============================================
    DrawingEditorView — Tab dedicata (Android)

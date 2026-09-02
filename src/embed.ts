@@ -342,9 +342,9 @@ function renderPreviewContent(preview: HTMLElement, svgContent: string | null) {
 		const div = preview.createDiv({ cls: 'hwm_preview-bg' });
 		// Immagine e aspect-ratio via CSS var: background-image e padding-bottom
 		// sono definiti in .hwm_preview-bg come var(--hwm-bg-img) e var(--hwm-ratio)
-		const m = svgContent.match(/viewBox="0 0 (\d+) (\d+)"/);
-		const svgW = m ? parseInt(m[1]!) : 800;
-		const svgH = m ? parseInt(m[2]!) : 300;
+		const m = svgContent.match(/viewBox="0 0 ([\d\.]+) ([\d\.]+)"/);
+		const svgW = m ? parseFloat(m[1]!) : 794;
+		const svgH = m ? parseFloat(m[2]!) : 1123;
 		div.setCssProps({
 			'--hwm-bg-img': `url('data:image/svg+xml,${encodeURIComponent(svgContent)}')`,
 			'--hwm-ratio':  `${svgH / svgW * 100}%`,
@@ -596,13 +596,26 @@ function createPortalPanel(
 	}, { passive: false });
 	// The preview may be much taller than the floating Edit button. Double-clicking
 	// anywhere on the drawing opens the same inline editor without scrolling back up.
-	container.addEventListener('dblclick', event => {
+
+
+
+		// Manual double click implementation to bypass Obsidian's core dblclick intercept
+	let lastClickTime = 0;
+	const onDown = (event: Event) => {
 		if ((event.target as HTMLElement).closest('.hwm_portal-panel')) return;
 		event.preventDefault();
 		event.stopPropagation();
-		openInlineEditor();
-	});
-
+		const now = Date.now();
+		if (now - lastClickTime < 400) {
+			lastClickTime = 0;
+			openInlineEditor();
+		} else {
+			lastClickTime = now;
+		}
+	};
+	container.addEventListener('mousedown', onDown, { capture: true });
+	container.addEventListener('pointerdown', onDown, { capture: true });
+	
 	// Separatore visivo
 	const sep = activeDocument.createElement('div');
 	sep.className = 'hwm_separator';
@@ -708,7 +721,7 @@ function createPortalPanel(
 	});
 
 	// Registra le azioni nel plugin per il menu "⋮" di Obsidian.
-	plugin.embedActions.set(embedId, { expand: doExpand, collapse: doCollapse, container, sourcePath });
+	plugin.embedActions.set(embedId, { expand: doExpand, collapse: doCollapse, edit: openInlineEditor, container, sourcePath });
 	plugin.register(() => plugin.embedActions.delete(embedId));
 
 	// Layout-change: su Mobile nasconde il pannello quando la tab editor è aperta

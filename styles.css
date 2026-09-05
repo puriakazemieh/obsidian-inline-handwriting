@@ -1528,6 +1528,26 @@ input[type='color'].hwm_color-swatch {
 	gap: 12px;
 }
 
+
+.hwm_color-swatch--glass {
+	background: conic-gradient(
+		#ccc 0deg 90deg, #fff 90deg 180deg,
+		#ccc 180deg 270deg, #fff 270deg 360deg
+	) !important;
+	background-size: 12px 12px !important;
+	border: none !important;
+	border-radius: 50% !important;
+	cursor: pointer;
+	position: relative;
+}
+.hwm_color-swatch--glass::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	border-radius: 50%;
+	background: rgba(255,255,255,0.15);
+}
+
 .hwm_sheet-header {
 	display: flex;
 	justify-content: space-between;
@@ -1577,8 +1597,9 @@ input[type='color'].hwm_color-swatch {
 	transform: scale(0.9);
 }
 .hwm_sheet-stepper svg {
-	width: 14px;
-	height: 14px;
+	width: 16px !important;
+	height: 16px !important;
+	flex-shrink: 0;
 }
 .hwm_sheet-control-box {
 	display: flex;

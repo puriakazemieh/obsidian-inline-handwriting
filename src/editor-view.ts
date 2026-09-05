@@ -333,9 +333,21 @@ export async function buildEditorUI(opts: {
 	const bgBox = bgSec.createDiv({ cls: 'hwm_sheet-control-box' });
 	
 		let currentBgColor = canvas.getBgColor();
-	const bgColors = ['#131313', '#1e1e1e', '#ffffff', '#f4ecd8', '#2d2d2d'];
-	const bgBtns: HTMLInputElement[] = [];
-	bgColors.forEach(c => {
+	// Glass/Transparent special button
+	const glassBgBtn = bgBox.createEl('button', { cls: 'hwm_color-swatch hwm_color-swatch--glass' });
+	glassBgBtn.title = 'Transparent';
+	
+	const solidBgColors = ['#1e1e1e', '#ffffff', '#f4ecd8', '#f0f0f0'];
+	const bgBtns: (HTMLInputElement | HTMLButtonElement)[] = [glassBgBtn];
+	
+	glassBgBtn.addEventListener('click', () => {
+		bgBtns.forEach(b => b.classList.remove('hwm_active'));
+		glassBgBtn.classList.add('hwm_active');
+		currentBgColor = 'rgba(0,0,0,0)';
+		applyAppearance();
+	});
+	
+	solidBgColors.forEach(c => {
 		const btn = bgBox.createEl('input', { cls: 'hwm_color-swatch', attr: { type: 'color' } }) as HTMLInputElement;
 		btn.value = c;
 		btn.addEventListener('click', (e) => {
@@ -360,6 +372,15 @@ export async function buildEditorUI(opts: {
 		});
 		bgBtns.push(btn);
 	});
+	
+	// Mark current bg btn active
+	const currentBg = canvas.getBgColor();
+	if (currentBg === 'rgba(0,0,0,0)' || currentBg === 'transparent') {
+		glassBgBtn.classList.add('hwm_active');
+	} else {
+		const matchingBtn = bgBtns.find(b => b instanceof HTMLInputElement && b.value.toLowerCase() === currentBg.toLowerCase());
+		if (matchingBtn) matchingBtn.classList.add('hwm_active');
+	}
 
 	sheet.createDiv({ cls: 'hwm_sheet-divider', attr: { style: 'margin: 16px 0;' } });
 

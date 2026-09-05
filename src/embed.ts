@@ -601,20 +601,29 @@ function createPortalPanel(
 
 		// Manual double click implementation to bypass Obsidian's core dblclick intercept
 	let lastClickTime = 0;
-	const onDown = (event: Event) => {
+	let lastClickX = 0;
+	let lastClickY = 0;
+	const onDown = (event: PointerEvent | MouseEvent) => {
 		if ((event.target as HTMLElement).closest('.hwm_portal-panel')) return;
-		event.preventDefault();
-		event.stopPropagation();
+		// Only intercept mouse/pen events, NOT touch (so finger scroll still works)
+		if ((event as PointerEvent).pointerType === 'touch') return;
 		const now = Date.now();
-		if (now - lastClickTime < 400) {
+		const x = event.clientX;
+		const y = event.clientY;
+		const dist = Math.hypot(x - lastClickX, y - lastClickY);
+		if (now - lastClickTime < 400 && dist < 20) {
 			lastClickTime = 0;
+			event.preventDefault();
+			event.stopPropagation();
 			openInlineEditor();
 		} else {
 			lastClickTime = now;
+			lastClickX = x;
+			lastClickY = y;
 		}
 	};
-	container.addEventListener('mousedown', onDown, { capture: true });
-	container.addEventListener('pointerdown', onDown, { capture: true });
+	container.addEventListener('mousedown', onDown as EventListener, { capture: true });
+	container.addEventListener('pointerdown', onDown as EventListener, { capture: true });
 	
 	// Separatore visivo
 	const sep = activeDocument.createElement('div');

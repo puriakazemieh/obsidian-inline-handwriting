@@ -53,6 +53,11 @@
 .markdown-rendered .internal-embed[data-hwm-decorated="1"] {
 	pointer-events: auto !important;
 }
+.markdown-reading-view .internal-embed[data-hwm-decorated="1"] {
+	/* Keep normal one-finger page panning but disable browser double-tap zoom;
+	   the plugin owns that gesture to enter the inline editor. */
+	touch-action: manipulation;
+}
 
 /* --- Container principale dell'embed --- */
 .hwm_container {

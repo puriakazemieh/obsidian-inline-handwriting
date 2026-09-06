@@ -606,19 +606,46 @@ function createPortalPanel(
 	let tapStartX = 0;
 	let tapStartY = 0;
 	let tapMoved = false;
+	let secondTapPointerId: number | null = null;
+	const isEditorControlTarget = (target: EventTarget | null): boolean =>
+		target instanceof Element
+		&& !!target.closest('.hwm_portal-panel, .hwm_reading-inline-host');
 	container.addEventListener('pointerdown', event => {
-		if (event.target instanceof Element && event.target.closest('.hwm_portal-panel')) return;
+		if (isEditorControlTarget(event.target)) return;
+		const pointerType = event.pointerType || 'mouse';
+		const maxDistance = pointerType === 'touch' ? 32 : 20;
+		const isSecondTap = pointerType === lastPointerType
+			&& Date.now() - lastClickTime < 450
+			&& Math.hypot(event.clientX - lastClickX, event.clientY - lastClickY) < maxDistance;
 		tapPointerId = event.pointerId;
 		tapStartX = event.clientX;
 		tapStartY = event.clientY;
 		tapMoved = false;
+		if (isSecondTap) {
+			// Suppress Android's double-tap zoom before it can cancel pointerup.
+			secondTapPointerId = event.pointerId;
+			lastClickTime = 0;
+			event.preventDefault();
+			event.stopImmediatePropagation();
+		}
 	}, { capture: true });
 	container.addEventListener('pointermove', event => {
 		if (event.pointerId !== tapPointerId) return;
-		if (Math.hypot(event.clientX - tapStartX, event.clientY - tapStartY) > 14) tapMoved = true;
+		if (Math.hypot(event.clientX - tapStartX, event.clientY - tapStartY) > 14) {
+			tapMoved = true;
+			if (secondTapPointerId === event.pointerId) secondTapPointerId = null;
+		}
 	}, { capture: true });
 	const onPointerUp = (event: PointerEvent) => {
-		if (event.target instanceof Element && event.target.closest('.hwm_portal-panel')) return;
+		if (isEditorControlTarget(event.target)) return;
+		if (event.pointerId === secondTapPointerId && !tapMoved) {
+			secondTapPointerId = null;
+			tapPointerId = null;
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			openInlineEditor();
+			return;
+		}
 		if (event.pointerId !== tapPointerId || tapMoved) {
 			tapPointerId = null;
 			return;
@@ -627,38 +654,34 @@ function createPortalPanel(
 		const now = Date.now();
 		const x = event.clientX;
 		const y = event.clientY;
-		const dist = Math.hypot(x - lastClickX, y - lastClickY);
 		const pointerType = event.pointerType || 'mouse';
-		const maxDistance = pointerType === 'touch' ? 32 : 20;
-		if (pointerType === lastPointerType && now - lastClickTime < 450 && dist < maxDistance) {
-			lastClickTime = 0;
-			event.preventDefault();
-			event.stopPropagation();
-			openInlineEditor();
-		} else {
-			lastClickTime = now;
-			lastClickX = x;
-			lastClickY = y;
-			lastPointerType = pointerType;
-		}
+		lastClickTime = now;
+		lastClickX = x;
+		lastClickY = y;
+		lastPointerType = pointerType;
 	};
 	container.addEventListener('pointerup', onPointerUp, { capture: true });
-	container.addEventListener('pointercancel', () => { tapPointerId = null; tapMoved = false; }, { capture: true });
+	container.addEventListener('pointercancel', event => {
+		if (event.pointerId === secondTapPointerId) secondTapPointerId = null;
+		tapPointerId = null;
+		tapMoved = false;
+	}, { capture: true });
 	container.addEventListener('dblclick', event => {
-		if (event.target instanceof Element && event.target.closest('.hwm_portal-panel')) return;
+		if (isEditorControlTarget(event.target)) return;
 		event.preventDefault();
-		event.stopPropagation();
+		event.stopImmediatePropagation();
 		openInlineEditor();
 	}, { capture: true });
 	// Some Android WebViews suppress dblclick on an internal embed but still
 	// expose the second click's detail. Keep this independent fallback in the
 	// capture phase so Reading view can always enter inline editing.
 	container.addEventListener('click', event => {
-		if (event.detail < 2) return;
-		if (event.target instanceof Element && event.target.closest('.hwm_portal-panel')) return;
+		if (isEditorControlTarget(event.target)) return;
+		// The preview itself is not a navigation target. Consume the compatibility
+		// click so Obsidian cannot jump/open the raw SVG after either tap.
 		event.preventDefault();
-		event.stopPropagation();
-		openInlineEditor();
+		event.stopImmediatePropagation();
+		if (event.detail >= 2) openInlineEditor();
 	}, { capture: true });
 	
 	// Separatore visivo

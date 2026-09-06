@@ -156,7 +156,12 @@ export async function buildEditorUI(opts: {
 	el.setCssProps({ '--hwm-bg': bgColor });
 
 	// --- 2. FLOATING TOOL BELT ---
-	const toolBelt = el.createDiv({ cls: 'hwm_tool-belt' });
+	// Inline mode needs a full-width sticky positioning context: centring a wide
+	// menu against the narrow belt itself can push it outside the tablet viewport.
+	const toolBeltHost = isInlineEditor
+		? el.createDiv({ cls: 'hwm_tool-belt-host' })
+		: el;
+	const toolBelt = toolBeltHost.createDiv({ cls: 'hwm_tool-belt' });
 
 	// History Capsule
 	const historyCap = toolBelt.createDiv({ cls: 'hwm_capsule' });
@@ -214,7 +219,7 @@ export async function buildEditorUI(opts: {
 	// In an inline editor the menu belongs to the sticky tool belt itself. This
 	// avoids viewport-coordinate calculations (which are unreliable below
 	// transformed Obsidian containers) and makes the menu follow the belt by CSS.
-	const overlay = (isInlineEditor ? toolBelt : el).createDiv({ cls: 'hwm_more-overlay' });
+	const overlay = (isInlineEditor ? toolBeltHost : el).createDiv({ cls: 'hwm_more-overlay' });
 	const sheet = overlay.createDiv({ cls: 'hwm_more-sheet' });
 	sheet.createDiv({ cls: 'hwm_sheet-drag-handle' });
 

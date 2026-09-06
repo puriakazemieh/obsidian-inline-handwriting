@@ -976,15 +976,28 @@
 }
 .hwm_inline-editor .hwm_canvas-wrap { min-width: min(100%, 320px); }
 .internal-embed[data-hwm-decorated="1"] .hwm_reading-inline-host { pointer-events: auto; }
-/* Anchor the More sheet to the sticky tool belt itself. Unlike position:fixed,
-   this remains correct inside Obsidian containers that use transforms. */
-.hwm_inline-editor .hwm_tool-belt { overflow: visible; }
+/* A full-width sticky host keeps both the belt and its menu in one coordinate
+   system. The belt remains centred, while the wider menu is centred/clamped
+   against the editor width rather than against the narrow belt. */
+.hwm_inline-editor .hwm_tool-belt-host {
+	position: sticky;
+	top: 4px;
+	z-index: 40;
+	width: 100%;
+	flex: 0 0 auto;
+	display: flex;
+	justify-content: center;
+	overflow: visible;
+}
+.hwm_inline-editor .hwm_tool-belt {
+	position: relative;
+	top: auto;
+	overflow-x: auto;
+}
 .hwm_inline-editor .hwm_more-overlay {
 	position: absolute;
-	top: calc(100% + 8px);
-	left: 50%;
-	inset: auto;
-	width: min(560px, calc(100vw - 24px));
+	inset: calc(100% + 4px) auto auto 50%;
+	width: min(560px, calc(100% - 24px));
 	height: auto;
 	overflow: visible;
 	transform: translateX(-50%);
@@ -996,6 +1009,8 @@
 	left: auto;
 	width: 100%;
 	max-width: 100%;
+	max-height: calc(100vh - 96px);
+	overflow-y: auto;
 	transform: translateY(-10px) scale(0.95);
 }
 .hwm_inline-editor .hwm_more-overlay.hwm_visible .hwm_more-sheet {

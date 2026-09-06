@@ -1002,7 +1002,7 @@
 .hwm_inline-editor .hwm_more-overlay {
 	position: absolute;
 	inset: calc(100% + 4px) auto auto 50%;
-	width: min(560px, calc(100% - 24px));
+	width: min(440px, calc(100% - 32px));
 	height: auto;
 	overflow: visible;
 	transform: translateX(-50%);
@@ -1016,6 +1016,7 @@
 	max-width: 100%;
 	max-height: calc(100vh - 96px);
 	overflow-y: auto;
+	padding: 12px;
 	transform: translateY(-10px) scale(0.95);
 }
 .hwm_inline-editor .hwm_more-overlay.hwm_visible .hwm_more-sheet {
@@ -1716,6 +1717,23 @@ input[type='color'].hwm_color-swatch {
 .hwm_pattern-btn.hwm_active {
 	background: var(--hwm-primary-container);
 	color: var(--hwm-on-primary-container);
+}
+
+/* Compact inline menu: preserve touch-friendly controls while avoiding the
+   oversized desktop sheet proportions inside a note on tablets. */
+.hwm_inline-editor .hwm_more-sheet .hwm_sheet-section {
+	gap: 8px;
+	margin-bottom: 8px;
+}
+.hwm_inline-editor .hwm_more-sheet .hwm_sheet-grid-3 {
+	margin-bottom: 12px;
+}
+.hwm_inline-editor .hwm_more-sheet .hwm_sheet-btn {
+	padding: 9px 8px;
+}
+.hwm_inline-editor .hwm_more-sheet .hwm_sheet-control-box {
+	gap: 9px;
+	padding-block: 2px;
 }
 
 .hwm_sheet-divider {

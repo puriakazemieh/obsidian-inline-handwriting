@@ -21,6 +21,18 @@ export default class HandwritingPlugin extends Plugin {
 	// (Reading view, Live Preview e split panes). Manteniamo quindi tutte le
 	// callback, invece di far sì che l'ultima preview sostituisca le altre.
 	public previewCallbacks = new Map<string, Set<(svgContent: string) => void>>();
+	// Latest in-memory drawing for each SVG. Mode switches can mount the next
+	// editor before the asynchronous vault write finishes; this snapshot keeps
+	// Reading, Live Preview and the dedicated editor on one source of truth.
+	private svgSnapshots = new Map<string, string>();
+
+	cacheSvgSnapshot(path: string, svgContent: string): void {
+		this.svgSnapshots.set(path, svgContent);
+	}
+
+	getSvgSnapshot(path: string): string | undefined {
+		return this.svgSnapshots.get(path);
+	}
 
 	// Mappa embedId → svgPath: permette di trovare i file SVG da rimappare al cambio bgMode
 	public embedPaths = new Map<string, string>();
@@ -99,7 +111,11 @@ export default class HandwritingPlugin extends Plugin {
 			if (!(file instanceof TFile) || file.extension !== 'svg') return;
 			const id = file.basename;
 			if (!/^(hw_|HTMD_).+/i.test(id)) return;
-			void this.app.vault.read(file).then(svg => this.refreshPreview(id, svg));
+			void this.app.vault.read(file).then(svg => {
+				// A newer in-memory edit may already exist while an older queued write
+				// emits this modify event. Never push that older disk revision to views.
+				this.refreshPreview(id, this.getSvgSnapshot(file.path) ?? svg);
+			});
 		}));
 
 		// Comando: inserisce un nuovo blocco handwriting nel file corrente

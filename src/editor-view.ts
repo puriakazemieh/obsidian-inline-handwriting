@@ -14,6 +14,10 @@ import { t, type I18nKey } from './i18n';
 
 export const VIEW_TYPE_HANDWRITING = 'inline-handwriting-editor';
 
+// Serialize writes per SVG. Without this, a delayed save from the editor that
+// Obsidian just unmounted can finish after a newer editor save and overwrite it.
+const svgSaveQueues = new Map<string, Promise<void>>();
+
 /* =============================================
    Utilità condivise tra DrawingEditorView e DrawingModal
    ============================================= */
@@ -54,7 +58,7 @@ async function loadStrokesFromSvg(
 ): Promise<{ strokes: Stroke[]; texts: TextElement[]; canvasWidth: number | null; canvasHeight: number | null; background: SvgBackground | null }> {
 	const file = plugin.app.vault.getAbstractFileByPath(svgPath);
 	if (file instanceof TFile) {
-		const content = await plugin.app.vault.read(file);
+		const content = plugin.getSvgSnapshot(svgPath) ?? await plugin.app.vault.read(file);
 		const m = content.match(/viewBox="0 0 (\d+) (\d+)"/);
 		return {
 			strokes: parseSvgStrokes(content),
@@ -67,6 +71,14 @@ async function loadStrokesFromSvg(
 	return { strokes: [], texts: [], canvasWidth: null, canvasHeight: null, background: null };
 }
 
+export function drawingCanvasToSvg(canvas: DrawingCanvas): string {
+	return strokesToSvg(
+		canvas.getStrokes(), canvas.getWidth(), canvas.getHeight(),
+		canvas.getBgColor(), canvas.getLineColor(), canvas.getBackgroundPattern(),
+		canvas.getLineSpacing(), canvas.getTextElements(),
+	);
+}
+
 // Salva il contenuto SVG del canvas su disco e aggiorna la preview inline.
 export async function saveSvgToDisk(
 	canvas: DrawingCanvas,
@@ -74,19 +86,28 @@ export async function saveSvgToDisk(
 	embedId: string,
 	plugin: HandwritingPlugin
 ): Promise<void> {
-	const svg = strokesToSvg(
-		canvas.getStrokes(), canvas.getWidth(), canvas.getHeight(),
-		canvas.getBgColor(), canvas.getLineColor(), canvas.getBackgroundPattern(), canvas.getLineSpacing(), canvas.getTextElements()
-	);
-	const folder = svgPath.substring(0, svgPath.lastIndexOf('/'));
-	if (folder && !plugin.app.vault.getAbstractFileByPath(folder)) {
-		await plugin.app.vault.createFolder(folder);
-	}
-	const existing = plugin.app.vault.getAbstractFileByPath(svgPath);
-	if (existing instanceof TFile) {
-		await plugin.app.vault.modify(existing, svg);
-	} else {
-		await plugin.app.vault.create(svgPath, svg);
+	const svg = drawingCanvasToSvg(canvas);
+	// Cache synchronously, before the first await, so an editor mounted during a
+	// Reading/Edit mode switch loads these exact strokes immediately.
+	plugin.cacheSvgSnapshot(svgPath, svg);
+	const previousSave = svgSaveQueues.get(svgPath) ?? Promise.resolve();
+	const currentSave = previousSave.catch(() => undefined).then(async () => {
+		const folder = svgPath.substring(0, svgPath.lastIndexOf('/'));
+		if (folder && !plugin.app.vault.getAbstractFileByPath(folder)) {
+			await plugin.app.vault.createFolder(folder);
+		}
+		const existing = plugin.app.vault.getAbstractFileByPath(svgPath);
+		if (existing instanceof TFile) {
+			await plugin.app.vault.modify(existing, svg);
+		} else {
+			await plugin.app.vault.create(svgPath, svg);
+		}
+	});
+	svgSaveQueues.set(svgPath, currentSave);
+	try {
+		await currentSave;
+	} finally {
+		if (svgSaveQueues.get(svgPath) === currentSave) svgSaveQueues.delete(svgPath);
 	}
 	plugin.refreshPreview(embedId, svg);
 }
@@ -623,6 +644,9 @@ export class DrawingEditorView extends ItemView {
 
 		// Auto-save debounced (2s dopo l'ultimo cambiamento)
 		canvas.onChange(() => {
+			const svg = drawingCanvasToSvg(canvas);
+			this.plugin.cacheSvgSnapshot(this.svgPath, svg);
+			this.plugin.refreshPreview(this.embedId, svg);
 			if (this.saveTimer) window.clearTimeout(this.saveTimer);
 			this.saveTimer = window.setTimeout(() => { void this.saveSvg(); }, 2000);
 		});
@@ -749,6 +773,9 @@ export class DrawingModal extends Modal {
 
 		// Auto-save debounced (2s dopo l'ultimo cambiamento)
 		canvas.onChange(() => {
+			const svg = drawingCanvasToSvg(canvas);
+			this.plugin.cacheSvgSnapshot(this.svgPath, svg);
+			this.plugin.refreshPreview(this.embedId, svg);
 			if (this.saveTimer) window.clearTimeout(this.saveTimer);
 			this.saveTimer = window.setTimeout(() => { void this.saveSvg(); }, 2000);
 		});

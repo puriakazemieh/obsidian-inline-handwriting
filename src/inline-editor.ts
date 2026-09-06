@@ -1,7 +1,7 @@
 import { Notice, TFile } from 'obsidian';
 import type HandwritingPlugin from './main';
 import { DrawingCanvas } from './drawing-canvas';
-import { buildEditorUI, replaceInMdFile, saveSvgToDisk } from './editor-view';
+import { buildEditorUI, drawingCanvasToSvg, replaceInMdFile, saveSvgToDisk } from './editor-view';
 import { t } from './i18n';
 
 /** A canvas editor embedded directly in a Markdown render/widget node. */
@@ -10,6 +10,7 @@ export class InlineDrawingEditor {
 	private bgModeListener: ((bgMode: string) => void) | null = null;
 	private resizeObserver: ResizeObserver | null = null;
 	private saveTimer: number | null = null;
+	private connectionObserver: MutationObserver | null = null;
 	private closing = false;
 
 	constructor(
@@ -29,6 +30,12 @@ export class InlineDrawingEditor {
 		}
 		this.host.empty();
 		this.host.addClass('hwm_editor-view', 'hwm_inline-editor');
+		// Start watching before the asynchronous SVG load. Obsidian can replace the
+		// Reading/Live Preview DOM while buildEditorUI is still awaiting the vault.
+		this.connectionObserver = new MutationObserver(() => {
+			if (!this.host.isConnected) this.destroy();
+		});
+		this.connectionObserver.observe(activeDocument.body, { childList: true, subtree: true });
 		const { canvas, bgModeListener } = await buildEditorUI({
 			el: this.host, plugin: this.plugin, svgPath: this.svgPath,
 			embedId: this.embedId, sourcePath: this.sourcePath,
@@ -52,7 +59,14 @@ export class InlineDrawingEditor {
 		this.host.style.removeProperty('min-height');
 		this.canvas = canvas;
 		this.bgModeListener = bgModeListener;
-		canvas.onChange(() => this.scheduleSave());
+		canvas.onChange(() => {
+			// Publish the new state synchronously. The next Obsidian mode can mount
+			// before the debounced vault write has completed.
+			const svg = drawingCanvasToSvg(canvas);
+			this.plugin.cacheSvgSnapshot(this.svgPath, svg);
+			this.plugin.refreshPreview(this.embedId, svg);
+			this.scheduleSave();
+		});
 		this.requestLayout();
 	}
 
@@ -78,6 +92,8 @@ export class InlineDrawingEditor {
 	}
 
 	private async dispose(save: boolean): Promise<void> {
+		this.connectionObserver?.disconnect();
+		this.connectionObserver = null;
 		if (this.saveTimer) window.clearTimeout(this.saveTimer);
 		this.saveTimer = null;
 		if (save) await this.save();

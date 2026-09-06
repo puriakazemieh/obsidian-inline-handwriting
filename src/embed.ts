@@ -22,7 +22,7 @@ import type HandwritingPlugin from './main';
 import { t, type I18nKey } from './i18n';
 import { strokesToSvg, parseSvgBackground, parseSvgStrokes, parseSvgText, generateId } from './svg-utils';
 import { getEffectiveBgColor, getEffectiveLineColor, remapStrokeColor, BgMode, resolveIsDark } from './settings';
-import { VIEW_TYPE_HANDWRITING, DrawingEditorView, DrawingModal } from './editor-view';
+import { VIEW_TYPE_HANDWRITING, DrawingEditorView } from './editor-view';
 import { InlineDrawingEditor } from './inline-editor';
 
 // Dati JSON salvati dentro il code block ```handwriting (formato legacy)
@@ -143,8 +143,11 @@ function setupMutationObserver(plugin: HandwritingPlugin) {
 		// Se fallisce (CSP Android WebView blocca blob:), ricade su cache-bust URL.
 		// In entrambi i casi, dopo il caricamento aggiorna l'altezza del wrapper
 		// per notificare CodeMirror Live Preview del nuovo scrollHeight (Android).
-		plugin.previewCallbacks.set(embedId, (svgContent: string) => {
-			if (!span.isConnected) return;
+		const removePreviewCallback = plugin.addPreviewCallback(embedId, (svgContent: string) => {
+			if (!span.isConnected) {
+				removePreviewCallback();
+				return;
+			}
 			const img = span.querySelector('img');
 			if (!img) return;
 
@@ -184,6 +187,15 @@ function setupMutationObserver(plugin: HandwritingPlugin) {
 			}, { once: true });
 		});
 
+		// Force the image initially rendered by Obsidian to use the file's current
+		// revision too. Without this, changing from Editing to Reading can display
+		// an old cached SVG even though the vault file was saved correctly.
+		const svgFile = plugin.app.vault.getAbstractFileByPath(svgPath);
+		const initialImage = span.querySelector<HTMLImageElement>('img');
+		if (svgFile instanceof TFile && initialImage) {
+			initialImage.src = `${plugin.app.vault.getResourcePath(svgFile)}?t=${svgFile.stat.mtime}`;
+		}
+
 		// Pannello portale con tutti i bottoni, in document.body (fuori da cm-content)
 		createPortalPanel(span, embedId, svgPath, sourcePath, plugin);
 	};
@@ -205,6 +217,10 @@ function setupMutationObserver(plugin: HandwritingPlugin) {
 	});
 
 	observer.observe(activeDocument.body, { childList: true, subtree: true });
+	// The observer only sees future nodes. Decorate embeds already rendered when
+	// the plugin is enabled/reloaded as well, so Reading view works immediately.
+	activeDocument.body.querySelectorAll<HTMLElement>(`.internal-embed[src*="${plugin.settings.svgFolder}/"]`)
+		.forEach(tryDecorate);
 	// Disconnette l'observer quando il plugin viene disabilitato
 	plugin.register(() => observer.disconnect());
 }
@@ -297,8 +313,11 @@ function showLegacyPreview(
 	renderPreviewContent(preview, currentSvgContent);
 
 	// Callback refresh dalla tab editor
-	plugin.previewCallbacks.set(data.id, (newSvgContent) => {
-		if (!preview.isConnected) return;
+	const removePreviewCallback = plugin.addPreviewCallback(data.id, (newSvgContent) => {
+		if (!preview.isConnected) {
+			removePreviewCallback();
+			return;
+		}
 		currentSvgContent = newSvgContent;
 		renderPreviewContent(preview, newSvgContent);
 	});
@@ -342,7 +361,7 @@ function renderPreviewContent(preview: HTMLElement, svgContent: string | null) {
 		const div = preview.createDiv({ cls: 'hwm_preview-bg' });
 		// Immagine e aspect-ratio via CSS var: background-image e padding-bottom
 		// sono definiti in .hwm_preview-bg come var(--hwm-bg-img) e var(--hwm-ratio)
-		const m = svgContent.match(/viewBox="0 0 ([\d\.]+) ([\d\.]+)"/);
+		const m = svgContent.match(/viewBox="0 0 ([\d.]+) ([\d.]+)"/);
 		const svgW = m ? parseFloat(m[1]!) : 794;
 		const svgH = m ? parseFloat(m[2]!) : 1123;
 		div.setCssProps({
@@ -505,7 +524,6 @@ function createPortalPanel(
 	// Altezza del riquadro compresso: calcolata dinamicamente in updateCollapseBtn()
 	let isExpanded = true;
 	// Flag per nascondere il pannello quando il modal (Desktop) è aperto
-	let modalOpen = false;
 	let inlineOpening = false;
 
 	// position: relative sullo span è gestita dalla regola CSS
@@ -522,8 +540,7 @@ function createPortalPanel(
 	plugin.embedPaths.set(embedId, svgPath);
 
 	// --- Bottone matita ---
-	// Desktop: apre DrawingModal (overlay fullscreen, senza aprire nuova tab)
-	// Mobile: apre DrawingEditorView in una nuova tab
+	// Opens the editor inline in the current note in both Reading and Live Preview.
 	const pencilBtn = createPanelBtn(panel, 'pencil', 'btn_open_editor');
 	pencilBtn.classList.add('hwm_portal-edit-btn');
 	pencilBtn.createEl('span', { text: 'Edit', cls: 'hwm_portal-edit-label' });
@@ -553,35 +570,6 @@ function createPortalPanel(
 			panel.classList.remove('hwm_hidden');
 			new Notice('Unable to open the inline editor: ' + (error instanceof Error ? error.message : String(error)));
 		}
-		return;
-		if (Platform.isDesktop) {
-			if (modalOpen) return;
-			modalOpen = true;
-			// Nasconde il pannello mentre il modal è aperto (altrimenti galleggerebbe sul canvas)
-			panel.classList.add('hwm_hidden');
-			const modal = new DrawingModal(plugin.app, plugin, embedId, svgPath, sourcePath);
-			modal.onClosed = () => {
-				modalOpen = false;
-				if (container.isConnected) panel.classList.remove('hwm_hidden');
-			};
-			modal.open();
-		} else {
-			// Mobile: nuova tab (DrawingEditorView è fuori da cm-content)
-			const leaves = plugin.app.workspace.getLeavesOfType(VIEW_TYPE_HANDWRITING);
-			const existing = leaves.find(l => (l.view as DrawingEditorView).getEmbedId() === embedId);
-			if (existing !== undefined) {
-				plugin.app.workspace.setActiveLeaf(existing!, { focus: true });
-				return;
-			}
-			const leaf = plugin.app.workspace.getLeaf('tab');
-			if (!leaf) return;
-			await leaf.setViewState({
-				type: VIEW_TYPE_HANDWRITING,
-				state: { id: embedId, svg: svgPath, sourcePath },
-				active: true,
-			});
-			void plugin.app.workspace.revealLeaf(leaf);
-		}
 	})(); };
 	pencilBtn.addEventListener('click', openInlineEditor);
 	pencilBtn.addEventListener('pointerup', event => {
@@ -599,14 +587,17 @@ function createPortalPanel(
 
 
 
-		// Manual double click implementation to bypass Obsidian's core dblclick intercept
+	// Detect the second pointer release ourselves because Obsidian can consume the
+	// native dblclick event inside internal embeds. Do not also listen for mousedown:
+	// a normal mouse click emits pointerdown *and* mousedown, which previously made
+	// one click look like a double-click.
 	let lastClickTime = 0;
 	let lastClickX = 0;
 	let lastClickY = 0;
-	const onDown = (event: PointerEvent | MouseEvent) => {
-		if ((event.target as HTMLElement).closest('.hwm_portal-panel')) return;
-		// Only intercept mouse/pen events, NOT touch (so finger scroll still works)
-		if ((event as PointerEvent).pointerType === 'touch') return;
+	const onPointerUp = (event: PointerEvent) => {
+		if (event.target instanceof Element && event.target.closest('.hwm_portal-panel')) return;
+		// Do not interfere with finger scrolling in Reading view.
+		if (event.pointerType === 'touch') return;
 		const now = Date.now();
 		const x = event.clientX;
 		const y = event.clientY;
@@ -622,8 +613,13 @@ function createPortalPanel(
 			lastClickY = y;
 		}
 	};
-	container.addEventListener('mousedown', onDown as EventListener, { capture: true });
-	container.addEventListener('pointerdown', onDown as EventListener, { capture: true });
+	container.addEventListener('pointerup', onPointerUp, { capture: true });
+	container.addEventListener('dblclick', event => {
+		if (event.target instanceof Element && event.target.closest('.hwm_portal-panel')) return;
+		event.preventDefault();
+		event.stopPropagation();
+		openInlineEditor();
+	}, { capture: true });
 	
 	// Separatore visivo
 	const sep = activeDocument.createElement('div');

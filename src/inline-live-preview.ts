@@ -11,6 +11,7 @@ class InlineHandwritingWidget extends WidgetType {
 	private editor: InlineDrawingEditor | null = null;
 	private sourcePath = '';
 	private editorView: EditorView | null = null;
+	private removePreviewCallback: (() => void) | null = null;
 
 	constructor(private readonly plugin: HandwritingPlugin, private readonly svgPath: string) { super(); }
 
@@ -24,10 +25,25 @@ class InlineHandwritingWidget extends WidgetType {
 		root.tabIndex = -1;
 		this.sourcePath = sourcePathFor(this.plugin, view);
 		this.renderPreview(root);
+		this.removePreviewCallback = this.plugin.addPreviewCallback(this.embedId, () => {
+			// While the inline editor is open its canvas is the source of truth;
+			// rebuilding the widget here would discard that active editor.
+			if (!root.isConnected) {
+				this.removePreviewCallback?.();
+				this.removePreviewCallback = null;
+				return;
+			}
+			if (!this.editor) {
+				this.renderPreview(root);
+				this.editorView?.requestMeasure();
+			}
+		});
 		return root;
 	}
 
 	destroy(): void {
+		this.removePreviewCallback?.();
+		this.removePreviewCallback = null;
 		this.editor?.destroy();
 		this.editor = null;
 	}
@@ -50,7 +66,9 @@ class InlineHandwritingWidget extends WidgetType {
 				root.style.removeProperty('min-height');
 				this.editorView?.requestMeasure();
 			};
-			image.src = this.plugin.app.vault.getResourcePath(file);
+			// Resource URLs are stable on some Obsidian platforms. The mtime makes
+			// a newly mounted Reading/Live Preview show the latest saved SVG.
+			image.src = `${this.plugin.app.vault.getResourcePath(file)}?t=${file.stat.mtime}`;
 		} else {
 			preview.createEl('span', { text: t('notice_placeholder_draw') });
 			root.style.removeProperty('min-height');

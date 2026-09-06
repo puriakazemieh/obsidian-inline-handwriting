@@ -971,6 +971,19 @@
 }
 .hwm_inline-editor .hwm_canvas-wrap { min-width: min(100%, 320px); }
 .internal-embed[data-hwm-decorated="1"] .hwm_reading-inline-host { pointer-events: auto; }
+/* Keep the expanded More menu in view while the note itself scrolls, just like
+   the inline editor header. It has no layout height, so it does not displace
+   the canvas below it. */
+.hwm_inline-editor .hwm_more-overlay {
+	position: sticky;
+	top: 0;
+	inset: auto;
+	align-self: stretch;
+	flex: 0 0 0;
+	height: 0;
+	min-height: 0;
+	overflow: visible;
+}
 /* Tools, paper controls and history share the same toolbar surface. */
 .hwm_editor-toolbar .hwm_toolbar-group {
 	display: flex;
@@ -1530,6 +1543,17 @@ input[type='color'].hwm_color-swatch {
 
 
 .hwm_color-swatch--glass {
+	display: block;
+	flex: 0 0 30px;
+	width: 30px;
+	height: 30px;
+	min-width: 30px;
+	min-height: 30px;
+	max-width: 30px;
+	max-height: 30px;
+	box-sizing: border-box;
+	padding: 0;
+	margin: 0;
 	background: conic-gradient(
 		#ccc 0deg 90deg, #fff 90deg 180deg,
 		#ccc 180deg 270deg, #fff 270deg 360deg

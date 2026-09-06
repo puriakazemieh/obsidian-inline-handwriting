@@ -210,6 +210,12 @@ export async function buildEditorUI(opts: {
 	setButtonHelp(moreBtn, 'More Actions');
 	moreBtn.classList.add('hwm_tool-btn');
 
+	// Place the sheet immediately below the sticky tool belt. In inline editors
+	// this lets its overlay participate in the same sticky layout as the header.
+	const overlay = el.createDiv({ cls: 'hwm_more-overlay' });
+	const sheet = overlay.createDiv({ cls: 'hwm_more-sheet' });
+	sheet.createDiv({ cls: 'hwm_sheet-drag-handle' });
+
 	// --- 3. CANVAS AREA ---
 	const canvasWrap = el.createDiv({ cls: 'hwm_main-canvas-area' });
 	const scrollWrap = canvasWrap.createDiv({ cls: 'hwm_editor-scroll' });
@@ -244,7 +250,10 @@ export async function buildEditorUI(opts: {
 		canvas.allowFingerScroll(scrollTarget);
 	}
 
-	if (strokes.length > 0) {
+	// A handwriting block may contain only typed text. Load it even when there
+	// are no pen strokes, otherwise reopening it from the other Obsidian mode
+	// produces an apparently empty canvas.
+	if (strokes.length > 0 || texts.length > 0) {
 		const remapped = strokes.map(s => ({
 			...s, color: remapStrokeColor(s.color, plugin.settings.bgMode)
 		}));
@@ -256,13 +265,6 @@ export async function buildEditorUI(opts: {
 	const handle = scrollWrap.createDiv({ cls: 'hwm_resize-handle hwm_resize-handle--disabled' });
 	handle.createEl('span', { text: '⋯' });
 	handle.classList.toggle('hwm_resize-handle--dark', isDark);
-
-	// --- 4. MORE ACTIONS OVERLAY (BOTTOM SHEET) ---
-	const overlay = el.createDiv({ cls: 'hwm_more-overlay' });
-	const sheet = overlay.createDiv({ cls: 'hwm_more-sheet' });
-	sheet.createDiv({ cls: 'hwm_sheet-drag-handle' });
-
-	
 
 	// Line Thickness
 	const thickSec = sheet.createDiv({ cls: 'hwm_sheet-section' });

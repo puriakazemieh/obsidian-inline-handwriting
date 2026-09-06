@@ -17,8 +17,10 @@ import { registerInlineLivePreview } from './inline-live-preview';
 export default class HandwritingPlugin extends Plugin {
 	settings: HandwritingSettings;
 
-	// Mappa di callback per aggiornare le preview inline quando l'editor tab salva
-	public previewCallbacks = new Map<string, (svgContent: string) => void>();
+	// Più preview dello stesso SVG possono essere visibili contemporaneamente
+	// (Reading view, Live Preview e split panes). Manteniamo quindi tutte le
+	// callback, invece di far sì che l'ultima preview sostituisca le altre.
+	public previewCallbacks = new Map<string, Set<(svgContent: string) => void>>();
 
 	// Mappa embedId → svgPath: permette di trovare i file SVG da rimappare al cambio bgMode
 	public embedPaths = new Map<string, string>();
@@ -37,7 +39,24 @@ export default class HandwritingPlugin extends Plugin {
 
 	// Invocato dall'editor tab dopo ogni salvataggio per aggiornare la preview inline
 	refreshPreview(id: string, svgContent: string) {
-		this.previewCallbacks.get(id)?.(svgContent);
+		this.previewCallbacks.get(id)?.forEach(callback => callback(svgContent));
+	}
+
+	// Registra una preview e restituisce il cleanup da eseguire quando il relativo
+	// nodo DOM viene distrutto da Obsidian.
+	addPreviewCallback(id: string, callback: (svgContent: string) => void): () => void {
+		let callbacks = this.previewCallbacks.get(id);
+		if (!callbacks) {
+			callbacks = new Set();
+			this.previewCallbacks.set(id, callbacks);
+		}
+		callbacks.add(callback);
+		return () => {
+			const current = this.previewCallbacks.get(id);
+			if (!current) return;
+			current.delete(callback);
+			if (current.size === 0) this.previewCallbacks.delete(id);
+		};
 	}
 
 	// Chiamato da settings quando l'utente cambia bgMode:

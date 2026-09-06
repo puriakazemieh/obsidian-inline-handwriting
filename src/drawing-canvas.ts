@@ -32,7 +32,7 @@ export type DrawMode = 'pen' | 'eraser' | 'highlighter' | 'text' | 'lasso';
 export type BackgroundPattern = 'ruled' | 'grid' | 'dots' | 'blank';
 
 // Spaziatura righe orizzontali — costante condivisa con svg-utils.ts
-export const LINE_SPACING = 32;
+export const LINE_SPACING = 48;
 
 // Deep copy di un array di Stroke
 function cloneStrokes(strokes: Stroke[]): Stroke[] {

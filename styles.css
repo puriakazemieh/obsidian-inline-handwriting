@@ -49,6 +49,10 @@
 .markdown-reading-view .internal-embed[data-hwm-decorated="1"] {
 	pointer-events: auto;
 }
+.markdown-preview-view .internal-embed[data-hwm-decorated="1"],
+.markdown-rendered .internal-embed[data-hwm-decorated="1"] {
+	pointer-events: auto !important;
+}
 
 /* --- Container principale dell'embed --- */
 .hwm_container {
@@ -106,7 +110,7 @@
    Su mobile le regole .hwm-handwriting-mode sovrastano questo.
    NO overflow:hidden sullo span: clipperebbe i tratti ai bordi dell'SVG.
    Il border-radius va sull'img per arrotondarne gli angoli visivi. */
-.internal-embed[src*="_inline_handwriting/"] {
+.internal-embed[data-hwm-decorated="1"] {
 	display: block;
 	width: 100%;
 	border-radius: var(--radius-m);
@@ -117,7 +121,7 @@
 	padding: 0;
 	line-height: 0;
 }
-.internal-embed[src*="_inline_handwriting/"] img {
+.internal-embed[data-hwm-decorated="1"] img {
 	display: block;
 	width: 100%;
 	height: auto;
@@ -269,6 +273,7 @@
 	/* Previene scroll/zoom del browser durante il disegno con pennino/dito */
 	touch-action: none;
 }
+.hwm_canvas--eraser { cursor: cell; }
 
 /* --- Handle di resize in basso --- */
 .hwm_resize-handle {
@@ -971,18 +976,30 @@
 }
 .hwm_inline-editor .hwm_canvas-wrap { min-width: min(100%, 320px); }
 .internal-embed[data-hwm-decorated="1"] .hwm_reading-inline-host { pointer-events: auto; }
-/* Keep the expanded More menu in view while the note itself scrolls, just like
-   the inline editor header. It has no layout height, so it does not displace
-   the canvas below it. */
+/* Anchor the More sheet to the sticky tool belt itself. Unlike position:fixed,
+   this remains correct inside Obsidian containers that use transforms. */
+.hwm_inline-editor .hwm_tool-belt { overflow: visible; }
 .hwm_inline-editor .hwm_more-overlay {
-	position: sticky;
-	top: 0;
+	position: absolute;
+	top: calc(100% + 8px);
+	left: 50%;
 	inset: auto;
-	align-self: stretch;
-	flex: 0 0 0;
-	height: 0;
-	min-height: 0;
+	width: min(560px, calc(100vw - 24px));
+	height: auto;
 	overflow: visible;
+	transform: translateX(-50%);
+	display: block;
+}
+.hwm_inline-editor .hwm_more-sheet {
+	position: relative;
+	top: auto;
+	left: auto;
+	width: 100%;
+	max-width: 100%;
+	transform: translateY(-10px) scale(0.95);
+}
+.hwm_inline-editor .hwm_more-overlay.hwm_visible .hwm_more-sheet {
+	transform: translateY(0) scale(1);
 }
 /* Tools, paper controls and history share the same toolbar surface. */
 .hwm_editor-toolbar .hwm_toolbar-group {
@@ -1563,6 +1580,21 @@ input[type='color'].hwm_color-swatch {
 	border-radius: 50% !important;
 	cursor: pointer;
 	position: relative;
+}
+.hwm_sheet-control-box > button.hwm_color-swatch--glass {
+	/* Obsidian's mobile button rules can otherwise impose a rectangular
+	   min-width. Match the native colour inputs exactly. */
+	flex: 0 0 30px !important;
+	width: 30px !important;
+	height: 30px !important;
+	min-width: 30px !important;
+	min-height: 30px !important;
+	max-width: 30px !important;
+	max-height: 30px !important;
+	aspect-ratio: 1 / 1 !important;
+	border-radius: 50% !important;
+	padding: 0 !important;
+	margin: 0 !important;
 }
 .hwm_color-swatch--glass::after {
 	content: '';

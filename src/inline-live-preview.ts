@@ -119,7 +119,7 @@ function buildDecorations(plugin: HandwritingPlugin, state: EditorView['state'])
 	const builder = new RangeSetBuilder<Decoration>();
 	for (const match of state.doc.toString().matchAll(HANDWRITING_EMBED)) {
 		const svgPath = match[1];
-		if (!svgPath || !svgPath.startsWith(plugin.settings.svgFolder + '/')) continue;
+		if (!svgPath) continue;
 		const fileName = svgPath.split('/').pop() ?? '';
 		if (!/^(hw_|HTMD_).+\.svg$/i.test(fileName)) continue;
 		const from = match.index ?? 0;

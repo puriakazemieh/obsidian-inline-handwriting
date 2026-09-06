@@ -93,6 +93,15 @@ export default class HandwritingPlugin extends Plugin {
 		registerEmbed(this);
 		registerInlineLivePreview(this);
 
+		// Keep every mounted Reading/Live Preview instance in sync even when an
+		// SVG was changed by a different editor instance or another Obsidian pane.
+		this.registerEvent(this.app.vault.on('modify', file => {
+			if (!(file instanceof TFile) || file.extension !== 'svg') return;
+			const id = file.basename;
+			if (!/^(hw_|HTMD_).+/i.test(id)) return;
+			void this.app.vault.read(file).then(svg => this.refreshPreview(id, svg));
+		}));
+
 		// Comando: inserisce un nuovo blocco handwriting nel file corrente
 		this.addCommand({
 			id: 'insert-handwriting',

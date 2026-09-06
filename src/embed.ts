@@ -111,11 +111,11 @@ function setupMutationObserver(plugin: HandwritingPlugin) {
 		if (span.dataset.hwmDecorated === '1') return;
 
 		const svgPath = span.getAttribute('src') ?? '';
-		if (!svgPath.includes(plugin.settings.svgFolder + '/') || !svgPath.endsWith('.svg')) return;
-
 		const filename = svgPath.split('/').pop() ?? '';
-		const embedId  = filename.replace('.svg', '');
-		if (!embedId.startsWith('hw_') && !embedId.startsWith('HTMD_')) return;
+		const embedId = filename.replace(/\.svg$/i, '');
+		// Folder settings can change after drawings have been inserted. The stable
+		// HTMD_/hw_ filename is the reliable identity of a plugin drawing.
+		if (!/^(hw_|HTMD_).+\.svg$/i.test(filename)) return;
 
 		// Se Obsidian non ha ancora caricato l'immagine (classe image-embed
 		// assente), riprova tra 150 ms — il caricamento è asincrono.
@@ -206,10 +206,10 @@ function setupMutationObserver(plugin: HandwritingPlugin) {
 				if (!node.instanceOf(HTMLElement)) continue;
 				// Il nodo stesso potrebbe essere l'embed, oppure contenerlo
 				if (node.classList.contains('internal-embed') &&
-					node.getAttribute('src')?.includes(plugin.settings.svgFolder + '/')) {
+					node.getAttribute('src')?.toLowerCase().endsWith('.svg')) {
 					tryDecorate(node);
 				} else {
-					node.querySelectorAll<HTMLElement>(`.internal-embed[src*="${plugin.settings.svgFolder}/"]`)
+					node.querySelectorAll<HTMLElement>('.internal-embed')
 						.forEach(tryDecorate);
 				}
 			}
@@ -219,8 +219,15 @@ function setupMutationObserver(plugin: HandwritingPlugin) {
 	observer.observe(activeDocument.body, { childList: true, subtree: true });
 	// The observer only sees future nodes. Decorate embeds already rendered when
 	// the plugin is enabled/reloaded as well, so Reading view works immediately.
-	activeDocument.body.querySelectorAll<HTMLElement>(`.internal-embed[src*="${plugin.settings.svgFolder}/"]`)
+	activeDocument.body.querySelectorAll<HTMLElement>('.internal-embed')
 		.forEach(tryDecorate);
+	// Reading view has an explicit Markdown render lifecycle. Registering a post
+	// processor as well as the observer removes the timing race where an embed is
+	// already present but has not yet received its image-embed class.
+	plugin.registerMarkdownPostProcessor(el => {
+		if (el.classList.contains('internal-embed')) tryDecorate(el);
+		el.querySelectorAll<HTMLElement>('.internal-embed').forEach(tryDecorate);
+	});
 	// Disconnette l'observer quando il plugin viene disabilitato
 	plugin.register(() => observer.disconnect());
 }
@@ -594,15 +601,36 @@ function createPortalPanel(
 	let lastClickTime = 0;
 	let lastClickX = 0;
 	let lastClickY = 0;
+	let lastPointerType = '';
+	let tapPointerId: number | null = null;
+	let tapStartX = 0;
+	let tapStartY = 0;
+	let tapMoved = false;
+	container.addEventListener('pointerdown', event => {
+		if (event.target instanceof Element && event.target.closest('.hwm_portal-panel')) return;
+		tapPointerId = event.pointerId;
+		tapStartX = event.clientX;
+		tapStartY = event.clientY;
+		tapMoved = false;
+	}, { capture: true });
+	container.addEventListener('pointermove', event => {
+		if (event.pointerId !== tapPointerId) return;
+		if (Math.hypot(event.clientX - tapStartX, event.clientY - tapStartY) > 14) tapMoved = true;
+	}, { capture: true });
 	const onPointerUp = (event: PointerEvent) => {
 		if (event.target instanceof Element && event.target.closest('.hwm_portal-panel')) return;
-		// Do not interfere with finger scrolling in Reading view.
-		if (event.pointerType === 'touch') return;
+		if (event.pointerId !== tapPointerId || tapMoved) {
+			tapPointerId = null;
+			return;
+		}
+		tapPointerId = null;
 		const now = Date.now();
 		const x = event.clientX;
 		const y = event.clientY;
 		const dist = Math.hypot(x - lastClickX, y - lastClickY);
-		if (now - lastClickTime < 400 && dist < 20) {
+		const pointerType = event.pointerType || 'mouse';
+		const maxDistance = pointerType === 'touch' ? 32 : 20;
+		if (pointerType === lastPointerType && now - lastClickTime < 450 && dist < maxDistance) {
 			lastClickTime = 0;
 			event.preventDefault();
 			event.stopPropagation();
@@ -611,10 +639,22 @@ function createPortalPanel(
 			lastClickTime = now;
 			lastClickX = x;
 			lastClickY = y;
+			lastPointerType = pointerType;
 		}
 	};
 	container.addEventListener('pointerup', onPointerUp, { capture: true });
+	container.addEventListener('pointercancel', () => { tapPointerId = null; tapMoved = false; }, { capture: true });
 	container.addEventListener('dblclick', event => {
+		if (event.target instanceof Element && event.target.closest('.hwm_portal-panel')) return;
+		event.preventDefault();
+		event.stopPropagation();
+		openInlineEditor();
+	}, { capture: true });
+	// Some Android WebViews suppress dblclick on an internal embed but still
+	// expose the second click's detail. Keep this independent fallback in the
+	// capture phase so Reading view can always enter inline editing.
+	container.addEventListener('click', event => {
+		if (event.detail < 2) return;
 		if (event.target instanceof Element && event.target.closest('.hwm_portal-panel')) return;
 		event.preventDefault();
 		event.stopPropagation();

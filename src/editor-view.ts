@@ -149,6 +149,7 @@ export async function buildEditorUI(opts: {
 	const { el, plugin } = opts;
 	const isMobile = Platform.isMobile;
 	const isDark   = resolveIsDark(plugin.settings.bgMode);
+	const isInlineEditor = el.classList.contains('hwm_inline-editor');
 	const bgColor  = getEffectiveBgColor(plugin.settings);
 	const lineColor = getEffectiveLineColor(plugin.settings);
 	
@@ -170,12 +171,12 @@ export async function buildEditorUI(opts: {
 	let colors = getQuickPalette(plugin.settings, isDark);
 	let activeColorIdx = 0;
 	const colorsCap = toolBelt.createDiv({ cls: 'hwm_capsule hwm_capsule--colors' });
-	const colorBtns: HTMLElement[] = [];
+	const colorBtns: HTMLInputElement[] = [];
 	const addColorButton = (c: string): HTMLInputElement => {
 		const btn = colorsCap.createEl('input', {
 			cls: 'hwm_color-swatch',
 			attr: { type: 'color', title: c, 'aria-label': `Quick colour ${c}` }
-		}) as HTMLInputElement;
+		});
 		btn.value = c;
 		colorBtns.push(btn);
 		return btn;
@@ -210,9 +211,10 @@ export async function buildEditorUI(opts: {
 	setButtonHelp(moreBtn, 'More Actions');
 	moreBtn.classList.add('hwm_tool-btn');
 
-	// Place the sheet immediately below the sticky tool belt. In inline editors
-	// this lets its overlay participate in the same sticky layout as the header.
-	const overlay = el.createDiv({ cls: 'hwm_more-overlay' });
+	// In an inline editor the menu belongs to the sticky tool belt itself. This
+	// avoids viewport-coordinate calculations (which are unreliable below
+	// transformed Obsidian containers) and makes the menu follow the belt by CSS.
+	const overlay = (isInlineEditor ? toolBelt : el).createDiv({ cls: 'hwm_more-overlay' });
 	const sheet = overlay.createDiv({ cls: 'hwm_more-sheet' });
 	sheet.createDiv({ cls: 'hwm_sheet-drag-handle' });
 
@@ -350,7 +352,7 @@ export async function buildEditorUI(opts: {
 	});
 	
 	solidBgColors.forEach(c => {
-		const btn = bgBox.createEl('input', { cls: 'hwm_color-swatch', attr: { type: 'color' } }) as HTMLInputElement;
+		const btn = bgBox.createEl('input', { cls: 'hwm_color-swatch', attr: { type: 'color' } });
 		btn.value = c;
 		btn.addEventListener('click', (e) => {
 			if (!btn.classList.contains('hwm_active')) {
@@ -360,12 +362,12 @@ export async function buildEditorUI(opts: {
 				currentBgColor = btn.value;
 				applyAppearance();
 			} else {
-				try { btn.showPicker(); } catch (err) {}
+				try { btn.showPicker(); } catch { /* Browser has no programmatic picker. */ }
 			}
 		});
 		btn.addEventListener('touchend', (e) => {
 			if (btn.classList.contains('hwm_active')) {
-				try { btn.showPicker(); } catch (err) {}
+				try { btn.showPicker(); } catch { /* Browser has no programmatic picker. */ }
 			}
 		});
 		btn.addEventListener('input', () => {
@@ -400,12 +402,22 @@ export async function buildEditorUI(opts: {
 	const delIcon = deleteBtn.createSpan(); setIcon(delIcon, 'trash-2');
 	deleteBtn.createSpan({ text: 'Delete' });
 
-	closeSheetBtn.addEventListener('click', () => { overlay.classList.remove('hwm_visible'); });
+	const closeMoreSheet = () => overlay.classList.remove('hwm_visible');
+	const openMoreSheet = () => overlay.classList.add('hwm_visible');
+
+	closeSheetBtn.addEventListener('click', closeMoreSheet);
 	clearBtn.addEventListener('click', () => canvas.clear());
 	deleteBtn.addEventListener('click', () => { void opts.doDelete(); });
 	
-	moreBtn.addEventListener('click', () => { overlay.classList.add('hwm_visible'); });
-	overlay.addEventListener('click', (e) => { if(e.target === overlay) overlay.classList.remove('hwm_visible'); });
+	moreBtn.addEventListener('click', openMoreSheet);
+	overlay.addEventListener('click', (e) => { if(e.target === overlay) closeMoreSheet(); });
+	// With the inline sheet anchored to the belt there is deliberately no
+	// full-screen overlay. A tap elsewhere in this editor closes it instead.
+	el.addEventListener('pointerdown', event => {
+		if (!overlay.classList.contains('hwm_visible')) return;
+		if (event.target instanceof Node && (sheet.contains(event.target) || moreBtn.contains(event.target))) return;
+		closeMoreSheet();
+	}, { capture: true });
 
 	const bgModeListener = (bgMode: string) => {
 		const dark = resolveIsDark(bgMode);
@@ -413,7 +425,7 @@ export async function buildEditorUI(opts: {
 		const newColors = getQuickPalette(plugin.settings, dark);
 		colors = [...newColors];
 		colorBtns.forEach((btn, i) => {
-			if(btn instanceof HTMLInputElement) btn.value = newColors[i] ?? '';
+			btn.value = newColors[i] ?? '';
 			btn.setAttribute('title', newColors[i] ?? '');
 		});
 		canvas.setColor(colors[activeColorIdx]!);
@@ -465,21 +477,21 @@ export async function buildEditorUI(opts: {
 		selectColor(index);
 		void plugin.saveSettings();
 	};
-		const bindColorButton = (btn: HTMLElement) => {
-		const inputBtn = btn as HTMLInputElement;
+		const bindColorButton = (inputBtn: HTMLInputElement) => {
+		const btn = inputBtn;
 		inputBtn.addEventListener('click', (e) => {
 			const index = colorBtns.indexOf(btn);
 			if (!btn.classList.contains('hwm_active')) {
 				e.preventDefault();
 				selectColor(index);
 			} else {
-				try { inputBtn.showPicker(); } catch (err) {}
+				try { inputBtn.showPicker(); } catch { /* Browser has no programmatic picker. */ }
 			}
 		});
 		// Mobile Safari / iOS touch event support for opening color picker
 		inputBtn.addEventListener('touchend', (e) => {
 			if (btn.classList.contains('hwm_active')) {
-				try { inputBtn.showPicker(); } catch (err) {}
+				try { inputBtn.showPicker(); } catch { /* Browser has no programmatic picker. */ }
 			}
 		});
 		inputBtn.addEventListener('input', () => {
@@ -506,10 +518,6 @@ export async function buildEditorUI(opts: {
 	undoBtn.addEventListener('click', () => canvas.undo());
 	redoBtn.addEventListener('click', () => canvas.redo());
 		
-	const onSave = () => { void opts.doSave().then(() => new Notice(t('notice_saved'))); };
-		
-	
-	
 	return { canvas, bgModeListener };
 }
 

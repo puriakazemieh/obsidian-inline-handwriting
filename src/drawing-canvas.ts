@@ -463,10 +463,15 @@ export class DrawingCanvas {
 			&& this.temporaryEraserPreviousMode !== null
 			&& this.temporaryEraserPointerId === null;
 		const useTemporaryEraser = stylusEraser || armedContextEraser;
-		if (useTemporaryEraser) this.activateStylusEraser(
-			e.pointerId,
-			!hasExplicitEraserButton,
-		);
+		if (useTemporaryEraser) {
+			// Pressing a pen barrel button while hovering is itself a pointerdown.
+			// It arms erasing but is not yet a drawing gesture. Contact may arrive
+			// later only as pointermove because the pointer is already active.
+			e.preventDefault();
+			if (this.mobileMode) e.stopPropagation();
+			this.beginTemporaryEraserContact(e, !hasExplicitEraserButton);
+			return;
+		}
 
 		// Su mobile: il dito non disegna mai
 		if (this.mobileMode && ptype === 'touch' && !useTemporaryEraser) {
@@ -480,7 +485,7 @@ export class DrawingCanvas {
 			this.debugFn?.(`🖊 pointerdown tipo="${e.pointerType}" → "${ptype}"`);
 			e.stopPropagation();
 		}
-		this.canvas.setPointerCapture(e.pointerId);
+		this.capturePointer(e.pointerId);
 		this.activePointerId = e.pointerId;
 		this.isDrawing = true;
 		const pt = this.eventToPoint(e);
@@ -516,8 +521,12 @@ export class DrawingCanvas {
 		if (this.activePointerId !== null && e.pointerId !== this.activePointerId) return;
 		// Su mobile: ignora il dito
 		const stylusEraser = this.isStylusEraserButton(e, false);
+		const contextEraser = this.temporaryEraserUsesContextHint
+			&& this.temporaryEraserPreviousMode !== null
+			&& (this.temporaryEraserPointerId === null || this.temporaryEraserPointerId === e.pointerId);
+		const temporaryEraserRequested = stylusEraser || contextEraser;
 		const ptype = e.pointerType || 'pen';
-		if (this.mobileMode && ptype === 'touch' && !stylusEraser) {
+		if (this.mobileMode && ptype === 'touch' && !temporaryEraserRequested) {
 			// Bypass finger rejection if this is the active drawing pointer
 			if (!(this.isDrawing && e.pointerId === this.activePointerId)) {
 				return;
@@ -525,14 +534,32 @@ export class DrawingCanvas {
 		}
 
 		const pt = this.eventToPoint(e);
+		const inContact = this.isPointerInContact(e);
 		let resumedStroke = false;
-		if (stylusEraser) {
-			this.activateStylusEraser(e.pointerId);
+		if (temporaryEraserRequested) {
+			this.beginTemporaryEraserContact(e, contextEraser && !stylusEraser);
 		} else if (!this.temporaryEraserUsesContextHint) {
 			// A standard PointerEvent exposes the side button through `buttons`.
 			// As soon as that bit is released, immediately return to the selected
 			// tool—even while the pen is still touching the canvas.
-			resumedStroke = this.restoreTemporaryEraser(e.pointerId, pt);
+			if (!inContact && this.temporaryEraserPreviousMode !== null
+				&& this.isDrawing && this.mode === 'eraser') {
+				this.isDrawing = false;
+				this.activePointerId = null;
+				this.commitEraserChange();
+			}
+			resumedStroke = this.restoreTemporaryEraser(e.pointerId, inContact ? pt : undefined);
+			if (!inContact) return;
+		}
+		// With the barrel button still held, lifting the tip changes contact state
+		// through pointermove (the pointer remains active). Finish this erase pass
+		// but keep the temporary eraser armed for another contact or button release.
+		if (this.isDrawing && this.mode === 'eraser'
+			&& temporaryEraserRequested && !inContact) {
+			this.isDrawing = false;
+			this.activePointerId = null;
+			this.commitEraserChange();
+			return;
 		}
 
 		if (!this.isDrawing) return;
@@ -569,7 +596,7 @@ export class DrawingCanvas {
 			} else this.drawSegment(this.currentStroke);
 			this.checkAutoExpand(pt);
 		} else if (this.mode === 'eraser') {
-			this.eraseAt(pt);
+			this.eraseFromPointerEvent(e);
 		}
 	}
 
@@ -694,12 +721,30 @@ export class DrawingCanvas {
 	private onPointerRawUpdate(e: PointerEvent) {
 		if (this.activePointerId !== null && e.pointerId !== this.activePointerId) return;
 		const stylusEraser = this.isStylusEraserButton(e, false);
-		if (stylusEraser) {
-			this.activateStylusEraser(e.pointerId);
+		const contextEraser = this.temporaryEraserUsesContextHint
+			&& this.temporaryEraserPreviousMode !== null
+			&& (this.temporaryEraserPointerId === null || this.temporaryEraserPointerId === e.pointerId);
+		if (stylusEraser || contextEraser) {
+			this.beginTemporaryEraserContact(e, contextEraser && !stylusEraser);
+			if (this.isDrawing && this.mode === 'eraser' && !this.isPointerInContact(e)) {
+				this.isDrawing = false;
+				this.activePointerId = null;
+				this.commitEraserChange();
+			}
 			return;
 		}
 		if (!this.temporaryEraserUsesContextHint) {
-			this.restoreTemporaryEraser(e.pointerId, this.isDrawing ? this.eventToPoint(e) : undefined);
+			const inContact = this.isPointerInContact(e);
+			if (!inContact && this.temporaryEraserPreviousMode !== null
+				&& this.isDrawing && this.mode === 'eraser') {
+				this.isDrawing = false;
+				this.activePointerId = null;
+				this.commitEraserChange();
+			}
+			this.restoreTemporaryEraser(
+				e.pointerId,
+				this.isDrawing && inContact ? this.eventToPoint(e) : undefined,
+			);
 		}
 	}
 
@@ -708,7 +753,56 @@ export class DrawingCanvas {
 		// button 5 / mask 32 for an eraser end. Android maps BTN_STYLUS to
 		// BUTTON_SECONDARY, so accepting these specific states avoids treating
 		// unrelated mouse navigation buttons as a stylus eraser.
-		return e.button === 2 || e.button === 5 || (e.buttons & (2 | 32)) !== 0;
+		// `button` describes the button whose state *changed*, so button=2 is also
+		// present on release. `buttons` is the authoritative current-state mask.
+		// Only pointerdown needs the transition value as a compatibility fallback.
+		return (e.buttons & (2 | 32)) !== 0
+			|| (e.type === 'pointerdown' && (e.button === 2 || e.button === 5));
+	}
+
+	private isPointerInContact(e: PointerEvent): boolean {
+		const pointerType = e.pointerType || 'pen';
+		if (pointerType === 'touch') return e.type !== 'pointerup' && e.type !== 'pointercancel';
+		// Pressure distinguishes S Pen contact from a side-button pointerdown while
+		// hovering. The primary-contact bit covers devices without pressure data.
+		return e.pressure > 0 || (e.buttons & 1) !== 0;
+	}
+
+	private capturePointer(pointerId: number): void {
+		try {
+			this.canvas.setPointerCapture(pointerId);
+		} catch {
+			// Android WebView can reject capture for a hover-originated pointer. The
+			// following contact events are still usable and must not abort the gesture.
+		}
+	}
+
+	private beginTemporaryEraserContact(e: PointerEvent, fromContextHint: boolean): boolean {
+		this.activateStylusEraser(e.pointerId, fromContextHint);
+		if (!this.isPointerInContact(e)) return false;
+		if (!this.isDrawing) {
+			if (e.cancelable) e.preventDefault();
+			if (this.mobileMode) e.stopPropagation();
+			this.capturePointer(e.pointerId);
+			this.activePointerId = e.pointerId;
+			this.isDrawing = true;
+			this.eraserChanged = false;
+			this.eraseFromPointerEvent(e);
+		}
+		return true;
+	}
+
+	private eraseFromPointerEvent(e: PointerEvent): void {
+		let samples: PointerEvent[] = [];
+		try {
+			samples = e.getCoalescedEvents?.() ?? [];
+		} catch {
+			// Some older Android WebViews expose the method but throw when called.
+		}
+		if (samples.length === 0) samples = [e];
+		for (const sample of samples) {
+			if (this.isPointerInContact(sample)) this.eraseAt(this.eventToPoint(sample));
+		}
 	}
 
 	private matchesStylusContextHint(e: PointerEvent): boolean {

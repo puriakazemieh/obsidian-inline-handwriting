@@ -6,6 +6,9 @@
    (funziona sia per disegno che per gomma).
    ============================================= */
 
+import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import pdfWorkerSource from 'pdfjs-worker-source';
+
 export interface Point {
 	x: number;
 	y: number;
@@ -38,6 +41,8 @@ export interface ImageElement {
 	height: number;
 	/** Normalized source rectangle; omitted means the whole image. */
 	crop?: { left: number; top: number; right: number; bottom: number };
+	/** Pages created by one PDF import share this id so they can be removed together. */
+	groupId?: string;
 }
 
 export type DrawMode = 'pen' | 'eraser' | 'highlighter' | 'text' | 'lasso';
@@ -45,6 +50,14 @@ export type BackgroundPattern = 'ruled' | 'grid' | 'dots' | 'blank';
 
 // Spaziatura righe orizzontali — costante condivisa con svg-utils.ts
 export const LINE_SPACING = 48;
+
+let pdfWorkerReady = false;
+function ensurePdfWorker(): void {
+	if (pdfWorkerReady) return;
+	const workerUrl = URL.createObjectURL(new Blob([pdfWorkerSource], { type: 'text/javascript' }));
+	GlobalWorkerOptions.workerPort = new Worker(workerUrl, { type: 'module' });
+	pdfWorkerReady = true;
+}
 
 // Deep copy di un array di Stroke
 function cloneStrokes(strokes: Stroke[]): Stroke[] {
@@ -365,6 +378,11 @@ export class DrawingCanvas {
 	getTextElements(): TextElement[] { return cloneTextElements(this.texts); }
 	getImageElements(): ImageElement[] { return cloneImageElements(this.images); }
 	setImageInsertionY(y: number): void { this.imageInsertionY = Math.max(0, y); }
+	getVisibleInsertionY(): number {
+		const rect = this.canvas.getBoundingClientRect();
+		const visibleTop = Math.max(rect.top, 0);
+		return Math.max(0, visibleTop - rect.top + 32);
+	}
 
 	/** Starts a non-destructive crop; it is stored only after applyCropSelectedImage(). */
 	beginCropSelectedImage(): boolean {
@@ -427,6 +445,44 @@ export class DrawingCanvas {
 		this.redraw();
 		this.changeCb?.();
 		this.imageChangeCb?.();
+	}
+
+	/** Imports every PDF page as an editable canvas image, stacked from the visible position. */
+	async insertPdf(file: File, insertionY = this.imageInsertionY): Promise<void> {
+		if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) return;
+		ensurePdfWorker();
+		const loadingTask = getDocument({ data: new Uint8Array(await file.arrayBuffer()) });
+		const pdf = await loadingTask.promise;
+		const maxWidth = Math.max(160, this.worldWidth * 0.82);
+		let y = Math.max(0, insertionY);
+		const pdfGroupId = `pdf_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+		const inserted: ImageElement[] = [];
+		for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+			const page = await pdf.getPage(pageNumber);
+			const baseViewport = page.getViewport({ scale: 1 });
+			const displayScale = Math.min(1, maxWidth / baseViewport.width);
+			const viewport = page.getViewport({ scale: displayScale * 1.5 });
+			const raster = activeDocument.createElement('canvas');
+			raster.width = Math.ceil(viewport.width); raster.height = Math.ceil(viewport.height);
+			const context = raster.getContext('2d');
+			if (!context) continue;
+			await page.render({ canvas: raster, canvasContext: context, viewport }).promise;
+			const width = baseViewport.width * displayScale;
+			const height = baseViewport.height * displayScale;
+			const element: ImageElement = {
+				id: `${pdfGroupId}_${pageNumber}`,
+				groupId: pdfGroupId,
+				src: raster.toDataURL('image/png'), x: Math.max(0, (this.worldWidth - width) / 2), y, width, height,
+			};
+			this.images.push(element); inserted.push(element); y += height + 28;
+		}
+		await loadingTask.destroy();
+		if (inserted.length === 0) return;
+		if (y + 40 > this.logicalHeight) this.resizeHeight(y + 40);
+		this.imageInsertionY = y;
+		this.selectedImage = inserted[inserted.length - 1] ?? null;
+		this.selectMode('lasso'); this.pushHistory(); this.preloadImages(); this.redraw();
+		this.changeCb?.(); this.imageChangeCb?.();
 	}
 	// Ritorna le dimensioni nel sistema di coordinate mondo (usato per l'SVG viewBox)
 	getWidth(): number  { return this.worldWidth; }
@@ -665,7 +721,7 @@ export class DrawingCanvas {
 					return;
 				}
 			}
-			const image = this.imageAt(pt);
+			const image = this.imageAt(pt, 36);
 			if (image) {
 				this.selectedImage = image;
 				this.selectedStrokes.clear();
@@ -1169,10 +1225,15 @@ export class DrawingCanvas {
 				this.beginCropSelectedImage();
 				window.setTimeout(() => this.showImageMenu(event), 0);
 			});
-			addAction('Delete', () => {
-				this.images = this.images.filter(item => item !== this.selectedImage);
+			const selected = this.selectedImage;
+			const deleteSelection = (allPdfPages: boolean) => {
+				this.images = this.images.filter(item => allPdfPages && selected?.groupId ? item.groupId !== selected.groupId : item !== selected);
 				this.selectedImage = null; this.pushHistory(); this.redraw(); this.changeCb?.(); this.imageChangeCb?.();
-			});
+			};
+			if (selected?.groupId) {
+				addAction('Delete this page', () => deleteSelection(false));
+				addAction('Delete PDF', () => deleteSelection(true));
+			} else addAction('Delete image', () => deleteSelection(false));
 		}
 		host.appendChild(menu); this.imageMenu = menu;
 	}
@@ -1344,16 +1405,16 @@ export class DrawingCanvas {
 			&& pt.y >= text.y - radius && pt.y <= text.y + height + radius;
 	}
 
-	private imageAt(pt: Point): ImageElement | null {
+	private imageAt(pt: Point, margin = 0): ImageElement | null {
 		for (let i = this.images.length - 1; i >= 0; i--) {
 			const image = this.images[i]!;
-			if (pt.x >= image.x && pt.x <= image.x + image.width && pt.y >= image.y && pt.y <= image.y + image.height) return image;
+			if (pt.x >= image.x - margin && pt.x <= image.x + image.width + margin && pt.y >= image.y - margin && pt.y <= image.y + image.height + margin) return image;
 		}
 		return null;
 	}
 
 	private imageResizeHandleAt(image: ImageElement, pt: Point): 'resize-left' | 'resize-top' | 'resize-right' | 'resize-bottom' | 'resize-nw' | 'resize-ne' | 'resize-se' | 'resize-sw' | null {
-		const tolerance = 20;
+		const tolerance = 38;
 		const near = (x: number, y: number) => Math.abs(pt.x - x) <= tolerance && Math.abs(pt.y - y) <= tolerance;
 		if (near(image.x, image.y)) return 'resize-nw';
 		if (near(image.x + image.width, image.y)) return 'resize-ne';
@@ -1391,7 +1452,7 @@ export class DrawingCanvas {
 		const right = image.x + image.width * crop.right;
 		const top = image.y + image.height * crop.top;
 		const bottom = image.y + image.height * crop.bottom;
-		const tolerance = 18;
+		const tolerance = 34;
 		if (pt.y >= top - tolerance && pt.y <= bottom + tolerance && Math.abs(pt.x - left) <= tolerance) return 'crop-left';
 		if (pt.y >= top - tolerance && pt.y <= bottom + tolerance && Math.abs(pt.x - right) <= tolerance) return 'crop-right';
 		if (pt.x >= left - tolerance && pt.x <= right + tolerance && Math.abs(pt.y - top) <= tolerance) return 'crop-top';
@@ -1436,11 +1497,11 @@ export class DrawingCanvas {
 			event.preventDefault();
 		} else if (modifier && event.key.toLowerCase() === 'x' && this.selectedImage) {
 			this.imageClipboard = { ...this.selectedImage };
-			this.images = this.images.filter(image => image !== this.selectedImage);
+			this.images = this.images.filter(image => this.selectedImage?.groupId ? image.groupId !== this.selectedImage.groupId : image !== this.selectedImage);
 			this.selectedImage = null;
 			this.pushHistory(); this.redraw(); this.changeCb?.(); this.imageChangeCb?.(); event.preventDefault();
 		} else if ((event.key === 'Delete' || event.key === 'Backspace') && this.selectedImage) {
-			this.images = this.images.filter(image => image !== this.selectedImage);
+			this.images = this.images.filter(image => this.selectedImage?.groupId ? image.groupId !== this.selectedImage.groupId : image !== this.selectedImage);
 			this.selectedImage = null;
 			this.pushHistory(); this.redraw(); this.changeCb?.(); this.imageChangeCb?.(); event.preventDefault();
 		}
@@ -1555,7 +1616,7 @@ export class DrawingCanvas {
 
 	private drawImageSelection(image: ImageElement): void {
 		const ctx = this.ctx; ctx.save(); ctx.scale(this.viewScale, 1);
-		ctx.strokeStyle = 'rgba(33, 150, 243, 0.95)'; ctx.lineWidth = 2 / this.viewScale; ctx.setLineDash([5 / this.viewScale, 4 / this.viewScale]);
+		ctx.strokeStyle = 'rgba(33, 150, 243, 0.95)'; ctx.lineWidth = 3 / this.viewScale; ctx.setLineDash([8 / this.viewScale, 5 / this.viewScale]);
 		if (this.cropMode) {
 			const crop = this.imageCrop(image);
 			const x = image.x + image.width * crop.left, y = image.y + image.height * crop.top;
@@ -1567,14 +1628,14 @@ export class DrawingCanvas {
 			ctx.fillRect(image.x, y + height, image.width, image.y + image.height - (y + height));
 			ctx.strokeRect(x, y, width, height);
 			ctx.fillStyle = '#2196F3';
-			const size = 14 / this.viewScale;
+			const size = 16 / this.viewScale;
 			for (const [handleX, handleY] of [[x, y + height / 2], [x + width, y + height / 2], [x + width / 2, y], [x + width / 2, y + height]] as [number, number][]) {
 				ctx.fillRect(handleX - size / 2, handleY - size / 2, size, size);
 			}
 		} else {
 			ctx.strokeRect(image.x, image.y, image.width, image.height);
 			ctx.fillStyle = '#2196F3';
-			const size = 14 / this.viewScale;
+			const size = 16 / this.viewScale;
 			const handles: [number, number][] = [
 				[image.x, image.y + image.height / 2], [image.x + image.width, image.y + image.height / 2],
 				[image.x + image.width / 2, image.y], [image.x + image.width / 2, image.y + image.height],

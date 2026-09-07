@@ -1,6 +1,10 @@
 import esbuild from "esbuild";
 import process from "process";
-import { builtinModules } from 'node:module';
+import { builtinModules, createRequire } from 'node:module';
+import { readFile } from 'node:fs/promises';
+
+const require = createRequire(import.meta.url);
+const pdfWorkerPath = require.resolve('pdfjs-dist/legacy/build/pdf.worker.min.mjs');
 
 const banner =
 `/*
@@ -39,6 +43,13 @@ const context = await esbuild.context({
 	treeShaking: true,
 	outfile: "main.js",
 	minify: prod,
+	plugins: [{
+		name: 'pdf-worker-source',
+		setup(build) {
+			build.onResolve({ filter: /^pdfjs-worker-source$/ }, () => ({ path: pdfWorkerPath, namespace: 'raw-text' }));
+			build.onLoad({ filter: /.*/, namespace: 'raw-text' }, async args => ({ contents: await readFile(args.path, 'utf8'), loader: 'text' }));
+		},
+	}],
 });
 
 if (prod) {

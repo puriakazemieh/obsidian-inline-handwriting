@@ -236,6 +236,9 @@ export async function buildEditorUI(opts: {
 	const imageBtn = mkBtn(toolsCap, 'image-plus', 'btn_pen');
 	setButtonHelp(imageBtn, 'Add image');
 	imageBtn.classList.add('hwm_tool-btn');
+	const pdfBtn = mkBtn(toolsCap, 'file-text', 'btn_pen');
+	setButtonHelp(pdfBtn, 'Add PDF pages');
+	pdfBtn.classList.add('hwm_tool-btn');
 
 	const moreBtn = mkBtn(toolsCap, 'more-horizontal', 'btn_pen');
 	setButtonHelp(moreBtn, 'More Actions');
@@ -261,7 +264,7 @@ export async function buildEditorUI(opts: {
 
 	const canvas = new DrawingCanvas(canvasInnerWrap, w, h, canvasHeight, isMobile, debugFn);
 	// New images (including clipboard images) are inserted into the visible paper area.
-	const updateImageInsertionPoint = () => canvas.setImageInsertionY(scrollWrap.scrollTop + 32);
+	const updateImageInsertionPoint = () => canvas.setImageInsertionY(canvas.getVisibleInsertionY());
 	updateImageInsertionPoint();
 	scrollWrap.addEventListener('scroll', updateImageInsertionPoint, { passive: true });
 	canvas.setBackground(
@@ -494,6 +497,19 @@ export async function buildEditorUI(opts: {
 		picker.addEventListener('change', () => {
 			const file = picker.files?.[0];
 			if (file) void canvas.insertImage(file);
+			picker.remove();
+		}, { once: true });
+		picker.click();
+	});
+	pdfBtn.addEventListener('click', () => {
+		const insertionY = canvas.getVisibleInsertionY();
+		canvas.setImageInsertionY(insertionY);
+		const picker = activeDocument.createElement('input');
+		picker.type = 'file'; picker.accept = 'application/pdf,.pdf'; picker.classList.add('hwm_file-picker');
+		activeDocument.body.appendChild(picker);
+		picker.addEventListener('change', () => {
+			const file = picker.files?.[0];
+			if (file) void canvas.insertPdf(file, insertionY).catch(() => new Notice('Could not open this PDF.'));
 			picker.remove();
 		}, { once: true });
 		picker.click();

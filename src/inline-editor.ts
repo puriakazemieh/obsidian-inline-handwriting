@@ -67,6 +67,7 @@ export class InlineDrawingEditor {
 			this.plugin.refreshPreview(this.embedId, svg);
 			this.scheduleSave();
 		});
+		canvas.onImageChange(() => { void this.save(); });
 		this.requestLayout();
 	}
 

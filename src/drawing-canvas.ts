@@ -28,6 +28,18 @@ export interface TextElement {
 	fontSize: number;
 }
 
+export interface ImageElement {
+	id: string;
+	/** A data URL makes the drawing portable with its SVG, even when a vault file moves. */
+	src: string;
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+	/** Normalized source rectangle; omitted means the whole image. */
+	crop?: { left: number; top: number; right: number; bottom: number };
+}
+
 export type DrawMode = 'pen' | 'eraser' | 'highlighter' | 'text' | 'lasso';
 export type BackgroundPattern = 'ruled' | 'grid' | 'dots' | 'blank';
 
@@ -48,9 +60,14 @@ function cloneTextElements(texts: TextElement[]): TextElement[] {
 	return texts.map(text => ({ ...text }));
 }
 
+function cloneImageElements(images: ImageElement[]): ImageElement[] {
+	return images.map(image => ({ ...image, crop: image.crop ? { ...image.crop } : undefined }));
+}
+
 interface CanvasState {
 	strokes: Stroke[];
 	texts: TextElement[];
+	images: ImageElement[];
 }
 
 export class DrawingCanvas {
@@ -58,6 +75,17 @@ export class DrawingCanvas {
 	private ctx: CanvasRenderingContext2D;
 	private strokes: Stroke[] = [];
 	private texts: TextElement[] = [];
+	private images: ImageElement[] = [];
+	private imageBitmaps = new Map<string, HTMLImageElement>();
+	private selectedImage: ImageElement | null = null;
+	private imageInteraction: 'move' | 'resize-left' | 'resize-top' | 'resize-right' | 'resize-bottom' | 'resize-nw' | 'resize-ne' | 'resize-se' | 'resize-sw' | 'crop-left' | 'crop-top' | 'crop-right' | 'crop-bottom' | null = null;
+	private cropMode = false;
+	private cropBefore: ImageElement | null = null;
+	private imageMenu: HTMLElement | null = null;
+	private imageLongPressTimer: number | null = null;
+	private imageLongPressPointerId: number | null = null;
+	private imageInsertionY = 40;
+	private imageClipboard: ImageElement | null = null;
 	private currentStroke: Stroke | null = null;
 	private mode: DrawMode = 'pen';
 	private color = '#000000';
@@ -68,6 +96,7 @@ export class DrawingCanvas {
 	private isDraggingSelection = false;
 	private dragStartPoint: Point | null = null;
 	private changeCb: (() => void) | null = null;
+	private imageChangeCb: (() => void) | null = null;
 	// Se true: siamo su mobile (Android/iOS)
 	private mobileMode = false;
 
@@ -104,6 +133,8 @@ export class DrawingCanvas {
 	private boundContextMenu: (e: MouseEvent) => void;
 	private boundGlobalStylusState: (e: PointerEvent) => void;
 	private boundGlobalMouseUp: (e: MouseEvent) => void;
+	private boundKeyDown: (e: KeyboardEvent) => void;
+	private boundPaste: (e: ClipboardEvent) => void;
 	private textInput: HTMLTextAreaElement | null = null;
 	private temporaryEraserPreviousMode: DrawMode | null = null;
 	private temporaryEraserPointerId: number | null = null;
@@ -176,6 +207,8 @@ export class DrawingCanvas {
 		this.boundContextMenu = this.onContextMenu.bind(this);
 		this.boundGlobalStylusState = this.onGlobalStylusState.bind(this);
 		this.boundGlobalMouseUp = this.onGlobalMouseUp.bind(this);
+		this.boundKeyDown = this.onKeyDown.bind(this);
+		this.boundPaste = this.onPaste.bind(this);
 
 		this.canvas.addEventListener('pointerdown', this.boundDown);
 		this.canvas.addEventListener('pointermove', this.boundMove);
@@ -192,11 +225,14 @@ export class DrawingCanvas {
 		activeDocument.addEventListener('pointerup', this.boundGlobalStylusState, true);
 		activeDocument.addEventListener('pointercancel', this.boundGlobalStylusState, true);
 		activeDocument.addEventListener('mouseup', this.boundGlobalMouseUp, true);
+		activeDocument.addEventListener('keydown', this.boundKeyDown, true);
+		activeDocument.addEventListener('paste', this.boundPaste, true);
 	}
 
 	/* --- API pubblica --- */
 
 	onChange(cb: () => void) { this.changeCb = cb; }
+	onImageChange(cb: () => void) { this.imageChangeCb = cb; }
 	// Registra callback per quando l'altezza cambia (utile per auto-scroll nell'overlay)
 	onResize(cb: () => void) { this.resizeCb = cb; }
 	onModeChange(cb: (mode: DrawMode) => void) { this.modeChangeCb = cb; }
@@ -297,6 +333,8 @@ export class DrawingCanvas {
 	setMode(mode: DrawMode) {
 		if (mode !== 'lasso') {
 			this.selectedStrokes.clear();
+			this.selectedImage = null;
+			this.cropMode = false;
 			this.lassoPath = [];
 			this.redraw();
 		}
@@ -325,6 +363,71 @@ export class DrawingCanvas {
 
 	getStrokes(): Stroke[] { return [...this.strokes]; }
 	getTextElements(): TextElement[] { return cloneTextElements(this.texts); }
+	getImageElements(): ImageElement[] { return cloneImageElements(this.images); }
+	setImageInsertionY(y: number): void { this.imageInsertionY = Math.max(0, y); }
+
+	/** Starts a non-destructive crop; it is stored only after applyCropSelectedImage(). */
+	beginCropSelectedImage(): boolean {
+		if (!this.selectedImage) return false;
+		this.selectMode('lasso');
+		this.cropBefore = cloneImageElements([this.selectedImage])[0] ?? null;
+		this.cropMode = true;
+		this.redraw();
+		return true;
+	}
+
+	/** Toolbar-friendly crop control: first tap starts, second tap applies. */
+	toggleCropSelectedImage(): boolean {
+		if (this.cropMode) { this.applyCropSelectedImage(); return true; }
+		return this.beginCropSelectedImage();
+	}
+
+	applyCropSelectedImage(): void {
+		if (!this.cropMode) return;
+		if (this.selectedImage && this.cropBefore) {
+			const crop = this.imageCrop(this.selectedImage);
+			this.selectedImage.x = this.cropBefore.x + this.cropBefore.width * crop.left;
+			this.selectedImage.y = this.cropBefore.y + this.cropBefore.height * crop.top;
+			this.selectedImage.width = this.cropBefore.width * (crop.right - crop.left);
+			this.selectedImage.height = this.cropBefore.height * (crop.bottom - crop.top);
+		}
+		this.cropMode = false; this.cropBefore = null;
+		this.pushHistory(); this.redraw(); this.changeCb?.(); this.imageChangeCb?.();
+	}
+
+	cancelCropSelectedImage(): void {
+		if (!this.cropMode) return;
+		if (this.selectedImage && this.cropBefore) Object.assign(this.selectedImage, this.cropBefore);
+		this.cropMode = false; this.cropBefore = null; this.redraw();
+	}
+
+	async insertImage(file: File): Promise<void> {
+		if (!file.type.startsWith('image/')) return;
+		const src = await new Promise<string>((resolve, reject) => {
+			const reader = new FileReader();
+			reader.onload = () => {
+				if (typeof reader.result === 'string') resolve(reader.result);
+				else reject(new Error('Unable to read image'));
+			};
+			reader.onerror = () => reject(reader.error ?? new Error('Unable to read image'));
+			reader.readAsDataURL(file);
+		});
+		const bitmap = await this.loadImage(src);
+		const maxWidth = Math.max(120, this.worldWidth * 0.7);
+		const scale = Math.min(maxWidth / bitmap.naturalWidth, Math.max(120, this.logicalHeight * 0.45) / bitmap.naturalHeight, 1);
+		const width = Math.max(80, Math.round(bitmap.naturalWidth * scale));
+		const height = Math.max(80, Math.round(bitmap.naturalHeight * scale));
+		const y = Math.max(0, this.imageInsertionY);
+		if (y + height + 40 > this.logicalHeight) this.resizeHeight(y + height + 40);
+		const image: ImageElement = { id: `image_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, src, x: Math.max(0, (this.worldWidth - width) / 2), y, width, height };
+		this.images.push(image);
+		this.selectedImage = image;
+		this.selectMode('lasso');
+		this.pushHistory();
+		this.redraw();
+		this.changeCb?.();
+		this.imageChangeCb?.();
+	}
 	// Ritorna le dimensioni nel sistema di coordinate mondo (usato per l'SVG viewBox)
 	getWidth(): number  { return this.worldWidth; }
 	getHeight(): number { return this.logicalHeight; }
@@ -346,9 +449,12 @@ export class DrawingCanvas {
 	getBackgroundPattern(): BackgroundPattern { return this.backgroundPattern; }
 	getLineSpacing(): number { return this.lineSpacing; }
 
-	loadStrokes(strokes: Stroke[], texts: TextElement[] = []) {
+	loadStrokes(strokes: Stroke[], texts: TextElement[] = [], images: ImageElement[] = []) {
 		this.strokes = cloneStrokes(strokes);
 		this.texts = cloneTextElements(texts);
+		this.images = cloneImageElements(images);
+		this.selectedImage = null;
+		this.preloadImages();
 		// Reset history con lo stato caricato
 		this.history = [];
 		this.historyIdx = -1;
@@ -378,6 +484,9 @@ export class DrawingCanvas {
 		const state = this.history[this.historyIdx]!;
 		this.strokes = cloneStrokes(state.strokes);
 		this.texts = cloneTextElements(state.texts);
+		this.images = cloneImageElements(state.images);
+		this.selectedImage = null;
+		this.preloadImages();
 		this.redraw();
 		this.changeCb?.();
 		return true;
@@ -390,6 +499,9 @@ export class DrawingCanvas {
 		const state = this.history[this.historyIdx]!;
 		this.strokes = cloneStrokes(state.strokes);
 		this.texts = cloneTextElements(state.texts);
+		this.images = cloneImageElements(state.images);
+		this.selectedImage = null;
+		this.preloadImages();
 		this.redraw();
 		this.changeCb?.();
 		return true;
@@ -398,6 +510,8 @@ export class DrawingCanvas {
 	clear() {
 		this.strokes = [];
 		this.texts = [];
+		this.images = [];
+		this.selectedImage = null;
 		this.pushHistory();
 		// Ridisegna subito (canvas visualmente vuoto) anche se l'altezza
 		// è già quella di default (animateHeight ritornerebbe senza fare nulla)
@@ -421,6 +535,8 @@ export class DrawingCanvas {
 			window.cancelAnimationFrame(this.animFrameId);
 		}
 		this.textInput?.remove();
+		this.closeImageMenu();
+		this.clearImageLongPress();
 		if (this.contextEraserArmTimer !== null) window.clearTimeout(this.contextEraserArmTimer);
 		this.textInput = null;
 		this.canvas.removeEventListener('pointerdown', this.boundDown);
@@ -435,6 +551,8 @@ export class DrawingCanvas {
 		activeDocument.removeEventListener('pointerup', this.boundGlobalStylusState, true);
 		activeDocument.removeEventListener('pointercancel', this.boundGlobalStylusState, true);
 		activeDocument.removeEventListener('mouseup', this.boundGlobalMouseUp, true);
+		activeDocument.removeEventListener('keydown', this.boundKeyDown, true);
+		activeDocument.removeEventListener('paste', this.boundPaste, true);
 		// Rimuove i listener aggiuntivi per lo scroll con il dito (se impostati)
 		this.fingerScrollCleanup?.();
 	}
@@ -445,7 +563,7 @@ export class DrawingCanvas {
 	// Taglia eventuali stati futuri (redo) quando si aggiunge un nuovo stato.
 	private pushHistory() {
 		this.history = this.history.slice(0, this.historyIdx + 1);
-		this.history.push({ strokes: cloneStrokes(this.strokes), texts: cloneTextElements(this.texts) });
+		this.history.push({ strokes: cloneStrokes(this.strokes), texts: cloneTextElements(this.texts), images: cloneImageElements(this.images) });
 		this.historyIdx = this.history.length - 1;
 	}
 
@@ -484,9 +602,21 @@ export class DrawingCanvas {
 	/* --- Pointer Events --- */
 
 	private onPointerDown(e: PointerEvent) {
+		if (!this.cropMode) this.closeImageMenu();
 		this.updateStylusButtonLatch(e);
 		// pointerType vuoto ("") = evento degradato da Android → trattato come penna
 		const ptype = e.pointerType || 'pen';
+		const touchedImage = this.mobileMode && ptype === 'touch' ? this.imageAt(this.eventToPoint(e)) : null;
+		if (touchedImage) {
+			e.preventDefault();
+			this.imageLongPressPointerId = e.pointerId;
+			this.imageLongPressTimer = window.setTimeout(() => {
+				this.imageLongPressTimer = null;
+				this.selectedImage = touchedImage; this.selectedStrokes.clear(); this.selectMode('lasso');
+				this.showImageMenu({ clientX: e.clientX, clientY: e.clientY } as MouseEvent);
+			}, 650);
+			return;
+		}
 		// Samsung S Pen and most styluses expose their side/eraser button as a
 		// secondary (or eraser) pointer button. Switch to eraser immediately.
 		const hasExplicitEraserButton = this.hasExplicitStylusEraserButton(e);
@@ -526,11 +656,31 @@ export class DrawingCanvas {
 			this.openTextInput(pt);
 			return;
 		} else if (this.mode === 'lasso') {
+			if (this.cropMode && this.selectedImage) {
+				const handle = this.cropHandleAt(this.selectedImage, pt);
+				if (handle) {
+					this.imageInteraction = handle;
+					this.dragStartPoint = pt;
+					this.isDraggingSelection = true;
+					return;
+				}
+			}
+			const image = this.imageAt(pt);
+			if (image) {
+				this.selectedImage = image;
+				this.selectedStrokes.clear();
+				this.imageInteraction = this.imageResizeHandleAt(image, pt) ?? 'move';
+				this.dragStartPoint = pt;
+				this.isDraggingSelection = true;
+				this.redraw();
+				return;
+			}
 			if (this.isPointInSelection(pt)) {
 				this.isDraggingSelection = true;
 				this.dragStartPoint = pt;
 			} else {
 				this.selectedStrokes.clear();
+				this.selectedImage = null;
 				this.lassoPath = [pt];
 				this.isDraggingSelection = false;
 				this.redraw();
@@ -548,6 +698,7 @@ export class DrawingCanvas {
 	}
 
 	private onPointerMove(e: PointerEvent) {
+		if (this.imageLongPressPointerId === e.pointerId) this.clearImageLongPress();
 		// Ignore a second finger while a pen gesture owns the canvas. Otherwise a
 		// touch event can prematurely end the temporary S Pen eraser state.
 		if (this.activePointerId !== null && e.pointerId !== this.activePointerId) return;
@@ -597,11 +748,14 @@ export class DrawingCanvas {
 			if (this.isDraggingSelection && this.dragStartPoint) {
 				const dx = pt.x - this.dragStartPoint.x;
 				const dy = pt.y - this.dragStartPoint.y;
-				for (const stroke of this.selectedStrokes) {
-					for (const p of stroke.points) {
-						p.x += dx;
-						p.y += dy;
-					}
+				if (this.selectedImage) {
+					if (this.imageInteraction?.startsWith('crop-')) {
+						this.adjustImageCrop(this.selectedImage, this.imageInteraction as 'crop-left' | 'crop-top' | 'crop-right' | 'crop-bottom', dx, dy);
+					} else if (this.imageInteraction?.startsWith('resize-')) {
+						this.resizeImage(this.selectedImage, this.imageInteraction as 'resize-left' | 'resize-top' | 'resize-right' | 'resize-bottom' | 'resize-nw' | 'resize-ne' | 'resize-se' | 'resize-sw', dx, dy);
+					} else { this.selectedImage.x += dx; this.selectedImage.y += dy; }
+				} else for (const stroke of this.selectedStrokes) {
+					for (const p of stroke.points) { p.x += dx; p.y += dy; }
 				}
 				this.dragStartPoint = pt;
 				this.redraw();
@@ -628,6 +782,7 @@ export class DrawingCanvas {
 	}
 
 	private onPointerUp(e: PointerEvent) {
+		if (this.imageLongPressPointerId === e.pointerId) this.clearImageLongPress();
 		if (this.activePointerId !== null && e.pointerId !== this.activePointerId) return;
 		this.updateStylusButtonLatch(e);
 		// Do not let a compatibility latch survive the end of the gesture unless
@@ -648,8 +803,8 @@ export class DrawingCanvas {
 		if (this.mode === 'lasso') {
 			if (this.isDraggingSelection) {
 				this.isDraggingSelection = false;
-				this.pushHistory();
-				this.changeCb?.();
+				this.imageInteraction = null;
+				if (!this.cropMode) { this.pushHistory(); this.changeCb?.(); if (this.selectedImage) this.imageChangeCb?.(); }
 			} else if (this.lassoPath.length > 2) {
 				for (const stroke of this.strokes) {
 					for (const pt of stroke.points) {
@@ -910,6 +1065,13 @@ export class DrawingCanvas {
 	}
 
 	private onContextMenu(e: MouseEvent) {
+		const image = this.imageAt(this.eventToPoint(e as unknown as PointerEvent));
+		if (image) {
+			e.preventDefault(); e.stopPropagation();
+			this.selectedImage = image; this.selectedStrokes.clear(); this.selectMode('lasso');
+			this.showImageMenu(e);
+			return;
+		}
 		// Fallback for Samsung devices that emit a contextmenu rather than a
 		// secondary PointerEvent for the side button. Do not open Android's menu.
 		if (!this.mobileMode) return;
@@ -982,6 +1144,46 @@ export class DrawingCanvas {
 			}
 		}
 		return false;
+	}
+
+	private showImageMenu(event: MouseEvent): void {
+		this.closeImageMenu();
+		const host = this.canvas.parentElement;
+		if (!host) return;
+		const menu = activeDocument.createElement('div');
+		menu.className = 'hwm_image-menu';
+		const rect = this.canvas.getBoundingClientRect();
+		menu.setCssProps({
+			'--hwm-image-menu-left': `${this.canvas.offsetLeft + event.clientX - rect.left}px`,
+			'--hwm-image-menu-top': `${this.canvas.offsetTop + event.clientY - rect.top}px`,
+		});
+		const addAction = (label: string, fn: () => void) => {
+			const button = menu.createEl('button', { text: label });
+			button.addEventListener('click', () => { fn(); this.closeImageMenu(); });
+		};
+		if (this.cropMode) {
+			addAction('Apply crop', () => this.applyCropSelectedImage());
+			addAction('Cancel crop', () => this.cancelCropSelectedImage());
+		} else {
+			addAction('Crop', () => {
+				this.beginCropSelectedImage();
+				window.setTimeout(() => this.showImageMenu(event), 0);
+			});
+			addAction('Delete', () => {
+				this.images = this.images.filter(item => item !== this.selectedImage);
+				this.selectedImage = null; this.pushHistory(); this.redraw(); this.changeCb?.(); this.imageChangeCb?.();
+			});
+		}
+		host.appendChild(menu); this.imageMenu = menu;
+	}
+
+	private closeImageMenu(): void {
+		this.imageMenu?.remove(); this.imageMenu = null;
+	}
+
+	private clearImageLongPress(): void {
+		if (this.imageLongPressTimer !== null) window.clearTimeout(this.imageLongPressTimer);
+		this.imageLongPressTimer = null; this.imageLongPressPointerId = null;
 	}
 
 	private clearTemporaryEraserState(): void {
@@ -1142,6 +1344,118 @@ export class DrawingCanvas {
 			&& pt.y >= text.y - radius && pt.y <= text.y + height + radius;
 	}
 
+	private imageAt(pt: Point): ImageElement | null {
+		for (let i = this.images.length - 1; i >= 0; i--) {
+			const image = this.images[i]!;
+			if (pt.x >= image.x && pt.x <= image.x + image.width && pt.y >= image.y && pt.y <= image.y + image.height) return image;
+		}
+		return null;
+	}
+
+	private imageResizeHandleAt(image: ImageElement, pt: Point): 'resize-left' | 'resize-top' | 'resize-right' | 'resize-bottom' | 'resize-nw' | 'resize-ne' | 'resize-se' | 'resize-sw' | null {
+		const tolerance = 20;
+		const near = (x: number, y: number) => Math.abs(pt.x - x) <= tolerance && Math.abs(pt.y - y) <= tolerance;
+		if (near(image.x, image.y)) return 'resize-nw';
+		if (near(image.x + image.width, image.y)) return 'resize-ne';
+		if (near(image.x + image.width, image.y + image.height)) return 'resize-se';
+		if (near(image.x, image.y + image.height)) return 'resize-sw';
+		if (pt.y >= image.y - tolerance && pt.y <= image.y + image.height + tolerance && Math.abs(pt.x - image.x) <= tolerance) return 'resize-left';
+		if (pt.y >= image.y - tolerance && pt.y <= image.y + image.height + tolerance && Math.abs(pt.x - (image.x + image.width)) <= tolerance) return 'resize-right';
+		if (pt.x >= image.x - tolerance && pt.x <= image.x + image.width + tolerance && Math.abs(pt.y - image.y) <= tolerance) return 'resize-top';
+		if (pt.x >= image.x - tolerance && pt.x <= image.x + image.width + tolerance && Math.abs(pt.y - (image.y + image.height)) <= tolerance) return 'resize-bottom';
+		return null;
+	}
+
+	private resizeImage(image: ImageElement, edge: 'resize-left' | 'resize-top' | 'resize-right' | 'resize-bottom' | 'resize-nw' | 'resize-ne' | 'resize-se' | 'resize-sw', dx: number, dy: number): void {
+		const oldWidth = image.width, oldHeight = image.height;
+		if (edge === 'resize-left') { const width = Math.max(48, oldWidth - dx); image.x += oldWidth - width; image.width = width; return; }
+		if (edge === 'resize-right') { image.width = Math.max(48, oldWidth + dx); return; }
+		if (edge === 'resize-top') { const height = Math.max(48, oldHeight - dy); image.y += oldHeight - height; image.height = height; return; }
+		if (edge === 'resize-bottom') { image.height = Math.max(48, oldHeight + dy); return; }
+		const horizontal = edge === 'resize-nw' || edge === 'resize-sw' ? -dx : dx;
+		const vertical = edge === 'resize-nw' || edge === 'resize-ne' ? -dy : dy;
+		const scale = Math.max(48 / oldWidth, 48 / oldHeight, (oldWidth + horizontal) / oldWidth, (oldHeight + vertical) / oldHeight);
+		const width = oldWidth * scale, height = oldHeight * scale;
+		if (edge === 'resize-nw' || edge === 'resize-sw') image.x += oldWidth - width;
+		if (edge === 'resize-nw' || edge === 'resize-ne') image.y += oldHeight - height;
+		image.width = width; image.height = height;
+	}
+
+	private imageCrop(image: ImageElement) {
+		return image.crop ?? { left: 0, top: 0, right: 1, bottom: 1 };
+	}
+
+	private cropHandleAt(image: ImageElement, pt: Point): 'crop-left' | 'crop-top' | 'crop-right' | 'crop-bottom' | null {
+		const crop = this.imageCrop(image);
+		const left = image.x + image.width * crop.left;
+		const right = image.x + image.width * crop.right;
+		const top = image.y + image.height * crop.top;
+		const bottom = image.y + image.height * crop.bottom;
+		const tolerance = 18;
+		if (pt.y >= top - tolerance && pt.y <= bottom + tolerance && Math.abs(pt.x - left) <= tolerance) return 'crop-left';
+		if (pt.y >= top - tolerance && pt.y <= bottom + tolerance && Math.abs(pt.x - right) <= tolerance) return 'crop-right';
+		if (pt.x >= left - tolerance && pt.x <= right + tolerance && Math.abs(pt.y - top) <= tolerance) return 'crop-top';
+		if (pt.x >= left - tolerance && pt.x <= right + tolerance && Math.abs(pt.y - bottom) <= tolerance) return 'crop-bottom';
+		return null;
+	}
+
+	private adjustImageCrop(image: ImageElement, handle: 'crop-left' | 'crop-top' | 'crop-right' | 'crop-bottom', dx: number, dy: number): void {
+		const crop = { ...this.imageCrop(image) };
+		const minimum = 0.08;
+		if (handle === 'crop-left') crop.left = Math.max(0, Math.min(crop.right - minimum, crop.left + dx / image.width));
+		if (handle === 'crop-right') crop.right = Math.min(1, Math.max(crop.left + minimum, crop.right + dx / image.width));
+		if (handle === 'crop-top') crop.top = Math.max(0, Math.min(crop.bottom - minimum, crop.top + dy / image.height));
+		if (handle === 'crop-bottom') crop.bottom = Math.min(1, Math.max(crop.top + minimum, crop.bottom + dy / image.height));
+		image.crop = crop;
+	}
+
+	private loadImage(src: string): Promise<HTMLImageElement> {
+		const cached = this.imageBitmaps.get(src);
+		if (cached?.complete) return Promise.resolve(cached);
+		return new Promise((resolve, reject) => {
+			const image = cached ?? new Image();
+			image.onload = () => { this.imageBitmaps.set(src, image); this.redraw(); resolve(image); };
+			image.onerror = () => reject(new Error('Unable to load image'));
+			image.src = src;
+			this.imageBitmaps.set(src, image);
+		});
+	}
+
+	private preloadImages(): void {
+		for (const image of this.images) void this.loadImage(image.src).catch(() => undefined);
+	}
+
+	private onKeyDown(event: KeyboardEvent): void {
+		if (event.defaultPrevented || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement) return;
+		const modifier = event.ctrlKey || event.metaKey;
+		if (modifier && event.key.toLowerCase() === 'v' && this.imageClipboard) {
+			const image = { ...this.imageClipboard, id: `image_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, x: this.imageClipboard.x + 24, y: this.imageClipboard.y + 24 };
+			this.images.push(image); this.selectedImage = image; this.pushHistory(); this.redraw(); this.changeCb?.(); this.imageChangeCb?.(); event.preventDefault();
+		} else if (modifier && event.key.toLowerCase() === 'c' && this.selectedImage) {
+			this.imageClipboard = { ...this.selectedImage };
+			event.preventDefault();
+		} else if (modifier && event.key.toLowerCase() === 'x' && this.selectedImage) {
+			this.imageClipboard = { ...this.selectedImage };
+			this.images = this.images.filter(image => image !== this.selectedImage);
+			this.selectedImage = null;
+			this.pushHistory(); this.redraw(); this.changeCb?.(); this.imageChangeCb?.(); event.preventDefault();
+		} else if ((event.key === 'Delete' || event.key === 'Backspace') && this.selectedImage) {
+			this.images = this.images.filter(image => image !== this.selectedImage);
+			this.selectedImage = null;
+			this.pushHistory(); this.redraw(); this.changeCb?.(); this.imageChangeCb?.(); event.preventDefault();
+		}
+	}
+
+	private onPaste(event: ClipboardEvent): void {
+		if (event.defaultPrevented || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement) return;
+		const file = Array.from(event.clipboardData?.files ?? []).find(item => item.type.startsWith('image/'));
+		if (file) { event.preventDefault(); void this.insertImage(file); return; }
+		if (this.imageClipboard) {
+			const image = { ...this.imageClipboard, id: `image_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, x: this.imageClipboard.x + 24, y: this.imageClipboard.y + 24 };
+			this.images.push(image); this.selectedImage = image; this.pushHistory(); this.redraw(); this.changeCb?.(); this.imageChangeCb?.(); event.preventDefault();
+		}
+	}
+
 	/* --- Rendering --- */
 
 	private clearBackground() {
@@ -1179,6 +1493,7 @@ export class DrawingCanvas {
 
 	private redraw() {
 		this.clearBackground();
+		for (const image of this.images) this.drawImageElement(image);
 		for (const stroke of this.strokes) {
 			this.drawFullStroke(stroke);
 		}
@@ -1221,7 +1536,55 @@ export class DrawingCanvas {
 				);
 				this.ctx.setLineDash([]);
 			}
+			if (this.selectedImage) this.drawImageSelection(this.selectedImage);
 		}
+	}
+
+	private drawImageElement(element: ImageElement): void {
+		const image = this.imageBitmaps.get(element.src);
+		if (!image?.complete) return;
+		const crop = this.imageCrop(element);
+		this.ctx.save(); this.ctx.scale(this.viewScale, 1);
+		// While cropping, show the original image with a movable crop frame.
+		if (this.cropMode && this.selectedImage === element) this.ctx.drawImage(image, element.x, element.y, element.width, element.height);
+		else this.ctx.drawImage(image, image.naturalWidth * crop.left, image.naturalHeight * crop.top,
+			image.naturalWidth * (crop.right - crop.left), image.naturalHeight * (crop.bottom - crop.top),
+			element.x, element.y, element.width, element.height);
+		this.ctx.restore();
+	}
+
+	private drawImageSelection(image: ImageElement): void {
+		const ctx = this.ctx; ctx.save(); ctx.scale(this.viewScale, 1);
+		ctx.strokeStyle = 'rgba(33, 150, 243, 0.95)'; ctx.lineWidth = 2 / this.viewScale; ctx.setLineDash([5 / this.viewScale, 4 / this.viewScale]);
+		if (this.cropMode) {
+			const crop = this.imageCrop(image);
+			const x = image.x + image.width * crop.left, y = image.y + image.height * crop.top;
+			const width = image.width * (crop.right - crop.left), height = image.height * (crop.bottom - crop.top);
+			ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+			ctx.fillRect(image.x, image.y, image.width, y - image.y);
+			ctx.fillRect(image.x, y, x - image.x, height);
+			ctx.fillRect(x + width, y, image.x + image.width - (x + width), height);
+			ctx.fillRect(image.x, y + height, image.width, image.y + image.height - (y + height));
+			ctx.strokeRect(x, y, width, height);
+			ctx.fillStyle = '#2196F3';
+			const size = 14 / this.viewScale;
+			for (const [handleX, handleY] of [[x, y + height / 2], [x + width, y + height / 2], [x + width / 2, y], [x + width / 2, y + height]] as [number, number][]) {
+				ctx.fillRect(handleX - size / 2, handleY - size / 2, size, size);
+			}
+		} else {
+			ctx.strokeRect(image.x, image.y, image.width, image.height);
+			ctx.fillStyle = '#2196F3';
+			const size = 14 / this.viewScale;
+			const handles: [number, number][] = [
+				[image.x, image.y + image.height / 2], [image.x + image.width, image.y + image.height / 2],
+				[image.x + image.width / 2, image.y], [image.x + image.width / 2, image.y + image.height],
+				[image.x, image.y], [image.x + image.width, image.y],
+				[image.x + image.width, image.y + image.height], [image.x, image.y + image.height],
+			];
+			for (const [x, y] of handles) ctx.fillRect(x - size / 2, y - size / 2, size, size);
+		}
+		ctx.setLineDash([]);
+		ctx.restore();
 	}
 
 	private drawTextElement(text: TextElement) {

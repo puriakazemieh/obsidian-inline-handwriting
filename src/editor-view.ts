@@ -7,8 +7,8 @@
 
 import { ItemView, WorkspaceLeaf, TFile, Notice, Platform, Modal, App, MarkdownView, setIcon, ViewStateResult } from 'obsidian';
 import type HandwritingPlugin from './main';
-import { BackgroundPattern, DrawingCanvas, Stroke, TextElement } from './drawing-canvas';
-import { strokesToSvg, parseSvgBackground, parseSvgStrokes, parseSvgText, SvgBackground } from './svg-utils';
+import { BackgroundPattern, DrawingCanvas, Stroke, TextElement, ImageElement } from './drawing-canvas';
+import { strokesToSvg, parseSvgBackground, parseSvgStrokes, parseSvgText, parseSvgImages, SvgBackground } from './svg-utils';
 import { getEffectiveBgColor, getEffectiveLineColor, getQuickPalette, remapStrokeColor, resolveIsDark, BgMode } from './settings';
 import { t, type I18nKey } from './i18n';
 
@@ -55,7 +55,7 @@ export async function replaceInMdFile(
 async function loadStrokesFromSvg(
 	svgPath: string,
 	plugin: HandwritingPlugin
-): Promise<{ strokes: Stroke[]; texts: TextElement[]; canvasWidth: number | null; canvasHeight: number | null; background: SvgBackground | null }> {
+): Promise<{ strokes: Stroke[]; texts: TextElement[]; images: ImageElement[]; canvasWidth: number | null; canvasHeight: number | null; background: SvgBackground | null }> {
 	const file = plugin.app.vault.getAbstractFileByPath(svgPath);
 	if (file instanceof TFile) {
 		const content = plugin.getSvgSnapshot(svgPath) ?? await plugin.app.vault.read(file);
@@ -63,19 +63,20 @@ async function loadStrokesFromSvg(
 		return {
 			strokes: parseSvgStrokes(content),
 			texts: parseSvgText(content),
+			images: parseSvgImages(content),
 			canvasWidth:  m ? parseInt(m[1] ?? '0') : null,
 			canvasHeight: m ? parseInt(m[2] ?? '0') : null,
 			background: content.includes('class="hwm-background"') ? parseSvgBackground(content) : null,
 		};
 	}
-	return { strokes: [], texts: [], canvasWidth: null, canvasHeight: null, background: null };
+	return { strokes: [], texts: [], images: [], canvasWidth: null, canvasHeight: null, background: null };
 }
 
 export function drawingCanvasToSvg(canvas: DrawingCanvas): string {
 	return strokesToSvg(
 		canvas.getStrokes(), canvas.getWidth(), canvas.getHeight(),
 		canvas.getBgColor(), canvas.getLineColor(), canvas.getBackgroundPattern(),
-		canvas.getLineSpacing(), canvas.getTextElements(),
+		canvas.getLineSpacing(), canvas.getTextElements(), canvas.getImageElements(),
 	);
 }
 
@@ -232,6 +233,9 @@ export async function buildEditorUI(opts: {
 	const textBtn = mkBtn(toolsCap, 'type', 'btn_pen');
 	setButtonHelp(textBtn, 'Type text');
 	textBtn.classList.add('hwm_tool-btn');
+	const imageBtn = mkBtn(toolsCap, 'image-plus', 'btn_pen');
+	setButtonHelp(imageBtn, 'Add image');
+	imageBtn.classList.add('hwm_tool-btn');
 
 	const moreBtn = mkBtn(toolsCap, 'more-horizontal', 'btn_pen');
 	setButtonHelp(moreBtn, 'More Actions');
@@ -249,13 +253,17 @@ export async function buildEditorUI(opts: {
 	const scrollWrap = canvasWrap.createDiv({ cls: 'hwm_editor-scroll' });
 	const canvasInnerWrap = scrollWrap.createDiv({ cls: 'hwm_canvas-wrap' });
 
-	const { strokes, texts, canvasWidth: savedW, canvasHeight: savedH, background } = await loadStrokesFromSvg(opts.svgPath, plugin);
+	const { strokes, texts, images, canvasWidth: savedW, canvasHeight: savedH, background } = await loadStrokesFromSvg(opts.svgPath, plugin);
 	const { canvasWidth, canvasHeight } = plugin.settings;
 	const w = savedW ?? canvasWidth;
 	const h = savedH ?? canvasHeight;
 	const debugFn = plugin.settings.debugMode ? (msg: string) => new Notice(msg, 3000) : null;
 
 	const canvas = new DrawingCanvas(canvasInnerWrap, w, h, canvasHeight, isMobile, debugFn);
+	// New images (including clipboard images) are inserted into the visible paper area.
+	const updateImageInsertionPoint = () => canvas.setImageInsertionY(scrollWrap.scrollTop + 32);
+	updateImageInsertionPoint();
+	scrollWrap.addEventListener('scroll', updateImageInsertionPoint, { passive: true });
 	canvas.setBackground(
 		background?.color ?? bgColor,
 		background?.lineColor ?? lineColor,
@@ -281,11 +289,11 @@ export async function buildEditorUI(opts: {
 	// A handwriting block may contain only typed text. Load it even when there
 	// are no pen strokes, otherwise reopening it from the other Obsidian mode
 	// produces an apparently empty canvas.
-	if (strokes.length > 0 || texts.length > 0) {
+	if (strokes.length > 0 || texts.length > 0 || images.length > 0) {
 		const remapped = strokes.map(s => ({
 			...s, color: remapStrokeColor(s.color, plugin.settings.bgMode)
 		}));
-		canvas.loadStrokes(remapped, texts);
+	canvas.loadStrokes(remapped, texts, images);
 	}
 
 	opts.afterCanvas(canvas, scrollWrap, canvasWidth);
@@ -476,6 +484,20 @@ export async function buildEditorUI(opts: {
 	highlighterBtn.addEventListener('click', () => { canvas.selectMode('highlighter'); });
 	textBtn.addEventListener('click', () => { canvas.selectMode('text'); });
 	lassoBtn.addEventListener('click', () => { canvas.selectMode('lasso'); });
+	imageBtn.addEventListener('click', () => {
+		updateImageInsertionPoint();
+		const picker = activeDocument.createElement('input');
+		picker.type = 'file'; picker.accept = 'image/*';
+		// Android/iOS WebViews may ignore click() on a detached file input.
+		picker.classList.add('hwm_file-picker');
+		activeDocument.body.appendChild(picker);
+		picker.addEventListener('change', () => {
+			const file = picker.files?.[0];
+			if (file) void canvas.insertImage(file);
+			picker.remove();
+		}, { once: true });
+		picker.click();
+	});
 
 	strokeSizeInput.addEventListener('input', () => {
 		strokeSizeValue.setText(strokeSizeInput.value);
@@ -650,6 +672,7 @@ export class DrawingEditorView extends ItemView {
 			if (this.saveTimer) window.clearTimeout(this.saveTimer);
 			this.saveTimer = window.setTimeout(() => { void this.saveSvg(); }, 2000);
 		});
+		canvas.onImageChange(() => { void this.saveSvg(); });
 	}
 
 	private async saveSvg() {
@@ -779,6 +802,7 @@ export class DrawingModal extends Modal {
 			if (this.saveTimer) window.clearTimeout(this.saveTimer);
 			this.saveTimer = window.setTimeout(() => { void this.saveSvg(); }, 2000);
 		});
+		canvas.onImageChange(() => { void this.saveSvg(); });
 	}
 
 	private async saveSvg() {

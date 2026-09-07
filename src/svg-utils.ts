@@ -5,7 +5,7 @@
    per poter ricaricare e rieditare il disegno.
    ============================================= */
 
-import { BackgroundPattern, Point, Stroke, TextElement, LINE_SPACING } from './drawing-canvas';
+import { BackgroundPattern, ImageElement, Point, Stroke, TextElement, LINE_SPACING } from './drawing-canvas';
 
 export interface SvgBackground {
 	color: string;
@@ -65,6 +65,7 @@ export function strokesToSvg(
 	bgColor = '#ffffff', lineColor = '#e0e0e0',
 	pattern: BackgroundPattern = 'ruled', spacing = LINE_SPACING,
 	texts: TextElement[] = [],
+	images: ImageElement[] = [],
 ): string {
 	const paths: string[] = [];
 
@@ -79,6 +80,10 @@ export function strokesToSvg(
 
 	const strokesJson = JSON.stringify(strokes);
 	const textsJson = JSON.stringify(texts);
+	const imagesJson = JSON.stringify(images);
+	const imageNodes = images.map(image =>
+		`  <image href="${escapeXml(image.src)}" x="${r(image.x)}" y="${r(image.y)}" width="${r(image.width)}" height="${r(image.height)}" preserveAspectRatio="none"/>`
+	);
 	const textNodes = texts.flatMap(text => text.text.split('\n').map((line, index) =>
 		`  <text x="${r(text.x)}" y="${r(text.y + index * (text.fontSize + 5))}" fill="${text.color}" font-size="${text.fontSize}" font-family="sans-serif" dominant-baseline="hanging">${escapeXml(line)}</text>`
 	));
@@ -112,6 +117,8 @@ export function strokesToSvg(
 		`  <desc class="hwm-background">${escapeXml(JSON.stringify(background))}</desc>`,
 		`  <desc class="hwm-strokes">${escapeXml(strokesJson)}</desc>`,
 		`  <desc class="hwm-text">${escapeXml(textsJson)}</desc>`,
+		`  <desc class="hwm-images">${escapeXml(imagesJson)}</desc>`,
+		...imageNodes,
 		...paths,
 		...textNodes,
 		`</svg>`
@@ -155,6 +162,26 @@ export function parseSvgText(svgContent: string): TextElement[] {
 			typeof (item as TextElement).text === 'string' && typeof (item as TextElement).color === 'string' &&
 			typeof (item as TextElement).fontSize === 'number'
 		);
+	} catch { return []; }
+}
+
+export function parseSvgImages(svgContent: string): ImageElement[] {
+	try {
+		const match = svgContent.match(/<desc class="hwm-images">([\s\S]*?)<\/desc>/);
+		if (!match) return [];
+		const parsed: unknown = JSON.parse(unescapeXml(match[1] ?? ''));
+		if (!Array.isArray(parsed)) return [];
+		return parsed.filter((item): item is ImageElement => item !== null && typeof item === 'object'
+			&& typeof (item as ImageElement).id === 'string' && typeof (item as ImageElement).src === 'string'
+			&& typeof (item as ImageElement).x === 'number' && typeof (item as ImageElement).y === 'number'
+			&& typeof (item as ImageElement).width === 'number' && typeof (item as ImageElement).height === 'number')
+			.map(image => {
+				const crop = image.crop;
+				const validCrop = crop && [crop.left, crop.top, crop.right, crop.bottom].every(Number.isFinite)
+					&& crop.left >= 0 && crop.top >= 0 && crop.right <= 1 && crop.bottom <= 1
+					&& crop.right > crop.left && crop.bottom > crop.top;
+				return validCrop ? image : { ...image, crop: undefined };
+			});
 	} catch { return []; }
 }
 

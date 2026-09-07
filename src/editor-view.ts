@@ -471,11 +471,11 @@ export async function buildEditorUI(opts: {
 		textBtn.classList.toggle('hwm_active', mode === 'text');
 		lassoBtn.classList.toggle('hwm_active', mode === 'lasso');
 	};
-	penBtn.addEventListener('click', () => { canvas.setMode('pen'); });
-	eraserBtn.addEventListener('click', () => { canvas.setMode('eraser'); });
-	highlighterBtn.addEventListener('click', () => { canvas.setMode('highlighter'); });
-	textBtn.addEventListener('click', () => { canvas.setMode('text'); });
-	lassoBtn.addEventListener('click', () => { canvas.setMode('lasso'); });
+	penBtn.addEventListener('click', () => { canvas.selectMode('pen'); });
+	eraserBtn.addEventListener('click', () => { canvas.selectMode('eraser'); });
+	highlighterBtn.addEventListener('click', () => { canvas.selectMode('highlighter'); });
+	textBtn.addEventListener('click', () => { canvas.selectMode('text'); });
+	lassoBtn.addEventListener('click', () => { canvas.selectMode('lasso'); });
 
 	strokeSizeInput.addEventListener('input', () => {
 		strokeSizeValue.setText(strokeSizeInput.value);

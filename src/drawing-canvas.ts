@@ -304,6 +304,18 @@ export class DrawingCanvas {
 		this.canvas.classList.toggle('hwm_canvas--eraser', mode === 'eraser');
 		this.modeChangeCb?.(mode);
 	}
+
+	// A toolbar choice is authoritative. Clear a stale temporary S Pen state so
+	// Android cannot immediately force the canvas back into eraser mode.
+	selectMode(mode: DrawMode) {
+		if (this.temporaryEraserPreviousMode !== null && this.mode === 'eraser') {
+			this.commitEraserChange();
+			this.isDrawing = false;
+			this.activePointerId = null;
+		}
+		this.clearTemporaryEraserState();
+		this.setMode(mode);
+	}
 	getMode(): DrawMode { return this.mode; }
 	// Restituisce true se un tratto è in corso (pointer down)
 	isPointerDown(): boolean { return this.isDrawing; }
@@ -559,7 +571,8 @@ export class DrawingCanvas {
 		let resumedStroke = false;
 		if (temporaryEraserRequested) {
 			this.beginTemporaryEraserContact(e, contextEraser && !stylusEraser);
-		} else if (!this.temporaryEraserUsesContextHint) {
+		} else if (!this.temporaryEraserUsesContextHint
+			&& this.temporaryEraserPreviousMode !== null) {
 			// A standard PointerEvent exposes the side button through `buttons`.
 			// As soon as that bit is released, immediately return to the selected
 			// tool—even while the pen is still touching the canvas.
@@ -572,16 +585,9 @@ export class DrawingCanvas {
 			resumedStroke = this.restoreTemporaryEraser(e.pointerId, inContact ? pt : undefined);
 			if (!inContact) return;
 		}
-		// With the barrel button still held, lifting the tip changes contact state
-		// through pointermove (the pointer remains active). Finish this erase pass
-		// but keep the temporary eraser armed for another contact or button release.
-		if (this.isDrawing && this.mode === 'eraser'
-			&& temporaryEraserRequested && !inContact) {
-			this.isDrawing = false;
-			this.activePointerId = null;
-			this.commitEraserChange();
-			return;
-		}
+		// Once an erase gesture starts, keep it alive until a release/up event.
+		// Samsung WebView may report pressure=0 and omit the primary contact bit
+		// throughout a valid barrel-button drag.
 
 		if (!this.isDrawing) return;
 		
@@ -624,7 +630,12 @@ export class DrawingCanvas {
 	private onPointerUp(e: PointerEvent) {
 		if (this.activePointerId !== null && e.pointerId !== this.activePointerId) return;
 		this.updateStylusButtonLatch(e);
-		const keepPhysicalEraser = this.stylusButtonHeld && !this.temporaryEraserUsesContextHint;
+		// Do not let a compatibility latch survive the end of the gesture unless
+		// the event still reports the physical side-button state explicitly.
+		const sideButtonStillDown = (e.buttons & (2 | 32 | 64)) !== 0;
+		const keepPhysicalEraser = sideButtonStillDown
+			&& this.stylusButtonHeld
+			&& !this.temporaryEraserUsesContextHint;
 		// Finger scrolling never sets isDrawing, so this also safely handles the
 		// Android case where an S Pen side-button release is reported as touch.
 		if (!this.isDrawing) {
@@ -752,11 +763,6 @@ export class DrawingCanvas {
 			&& (this.temporaryEraserPointerId === null || this.temporaryEraserPointerId === e.pointerId);
 		if (stylusEraser || contextEraser) {
 			this.beginTemporaryEraserContact(e, contextEraser && !stylusEraser);
-			if (this.isDrawing && this.mode === 'eraser' && !this.isPointerInContact(e)) {
-				this.isDrawing = false;
-				this.activePointerId = null;
-				this.commitEraserChange();
-			}
 			return;
 		}
 		if (!this.temporaryEraserUsesContextHint) {
@@ -796,22 +802,26 @@ export class DrawingCanvas {
 			&& !(this.mobileMode && (pointerType === 'mouse' || pointerType === 'touch'))) return false;
 		const sideMaskDown = (e.buttons & (2 | 32 | 64)) !== 0;
 		const sideTransition = e.button === 2 || e.button === 5;
-		if (sideMaskDown || (e.type === 'pointerdown' && sideTransition)) {
+		if (sideMaskDown) {
 			this.stylusButtonHeld = true;
 			this.stylusButtonPointerId = e.pointerId;
 			return false;
 		}
-		// When a WebView omits the barrel bit, a pointermove with button=2 is still
-		// a chord transition: press if currently up, release if currently latched.
-		// pointerrawupdate is ignored for this ambiguous fallback because a matching
-		// pointermove normally follows and must not toggle the latch twice.
+		if (e.type === 'pointerdown' && sideTransition) {
+			this.stylusButtonHeld = true;
+			this.stylusButtonPointerId = e.pointerId;
+			return false;
+		}
+		// When a WebView omits the barrel bit, button=2 on pointermove still arms
+		// the eraser. Never use the same repeated value as a release signal.
 		if (sideTransition && e.type === 'pointermove' && !this.stylusButtonHeld) {
 			this.stylusButtonHeld = true;
 			this.stylusButtonPointerId = e.pointerId;
 			return false;
 		}
-		const explicitRelease = sideTransition
-			&& (e.type === 'pointerup' || (e.type === 'pointermove' && this.stylusButtonHeld));
+		// `button=2` may be repeated on every Samsung pointermove while the
+		// current-state mask is missing, so only an actual up/cancel ends the latch.
+		const explicitRelease = sideTransition && e.type === 'pointerup';
 		if (explicitRelease || e.type === 'pointercancel') {
 			const wasHeld = this.stylusButtonHeld;
 			this.stylusButtonHeld = false;
@@ -888,9 +898,9 @@ export class DrawingCanvas {
 			// Some older Android WebViews expose the method but throw when called.
 		}
 		if (samples.length === 0) samples = [e];
-		for (const sample of samples) {
-			if (this.isPointerInContact(sample)) this.eraseAt(this.eventToPoint(sample));
-		}
+		// This method is only called for an active canvas gesture. Android WebView
+		// can report pressure=0 and buttons=0 for valid manual/S Pen drag samples.
+		for (const sample of samples) this.eraseAt(this.eventToPoint(sample));
 	}
 
 	private matchesStylusContextHint(e: PointerEvent): boolean {
@@ -925,11 +935,7 @@ export class DrawingCanvas {
 			this.contextEraserArmTimer = null;
 			if (this.temporaryEraserPointerId !== null) return;
 			const previousMode = this.temporaryEraserPreviousMode;
-			this.temporaryEraserPreviousMode = null;
-			this.temporaryEraserUsesContextHint = false;
-			this.stylusButtonHeld = false;
-			this.stylusButtonPointerId = null;
-			this.stylusContextHint = null;
+			this.clearTemporaryEraserState();
 			if (previousMode) this.setMode(previousMode);
 		}, 5000);
 	}
@@ -964,16 +970,7 @@ export class DrawingCanvas {
 	private restoreTemporaryEraser(pointerId: number, resumeAt?: Point): boolean {
 		if (this.temporaryEraserPointerId !== pointerId) return false;
 		const previousMode = this.temporaryEraserPreviousMode;
-		this.temporaryEraserPointerId = null;
-		this.temporaryEraserPreviousMode = null;
-		this.temporaryEraserUsesContextHint = false;
-		this.stylusButtonHeld = false;
-		this.stylusButtonPointerId = null;
-		if (this.contextEraserArmTimer !== null) {
-			window.clearTimeout(this.contextEraserArmTimer);
-			this.contextEraserArmTimer = null;
-		}
-		this.stylusContextHint = null;
+		this.clearTemporaryEraserState();
 		if (previousMode) {
 			// If the physical side button was released before pointerup, record the
 			// erasure now and then begin a fresh pen stroke from the same gesture.
@@ -985,6 +982,19 @@ export class DrawingCanvas {
 			}
 		}
 		return false;
+	}
+
+	private clearTemporaryEraserState(): void {
+		this.temporaryEraserPointerId = null;
+		this.temporaryEraserPreviousMode = null;
+		this.temporaryEraserUsesContextHint = false;
+		this.stylusButtonHeld = false;
+		this.stylusButtonPointerId = null;
+		if (this.contextEraserArmTimer !== null) {
+			window.clearTimeout(this.contextEraserArmTimer);
+			this.contextEraserArmTimer = null;
+		}
+		this.stylusContextHint = null;
 	}
 
 	private commitEraserChange() {
@@ -1139,6 +1149,9 @@ export class DrawingCanvas {
 		const w = this.logicalWidth;
 		const h = this.logicalHeight;
 
+		// Filling with a transparent color does not remove pixels already painted.
+		// Clear first so switching from a solid paper color is truly transparent.
+		this.ctx.clearRect(0, 0, w, h);
 		this.ctx.fillStyle = this.bgColor;
 		this.ctx.fillRect(0, 0, w, h);
 

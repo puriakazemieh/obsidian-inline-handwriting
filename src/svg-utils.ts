@@ -85,7 +85,7 @@ export function strokesToSvg(
 		`  <image href="${escapeXml(image.src)}" x="${r(image.x)}" y="${r(image.y)}" width="${r(image.width)}" height="${r(image.height)}" preserveAspectRatio="none"/>`
 	);
 	const textNodes = texts.flatMap(text => text.text.split('\n').map((line, index) =>
-		`  <text x="${r(text.x)}" y="${r(text.y + index * (text.fontSize + 5))}" fill="${text.color}" font-size="${text.fontSize}" font-family="sans-serif" dominant-baseline="hanging">${escapeXml(line)}</text>`
+		`  <text x="${r(text.x)}" y="${r(text.y + index * (text.fontSize + 5))}" fill="${text.color}" font-size="${text.fontSize}" font-family="system-ui, sans-serif" dominant-baseline="hanging">${escapeXml(line)}</text>`
 	));
 
 	// Righe orizzontali (foglio a righe) — stessa spaziatura del canvas

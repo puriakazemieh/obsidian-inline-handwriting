@@ -879,8 +879,8 @@
 	border: 1px solid var(--interactive-accent);
 	border-radius: var(--radius-s);
 	background: var(--background-primary);
-	color: var(--text-normal);
-	font: 18px/1.35 sans-serif;
+	color: var(--hwm-text-color, var(--text-normal));
+	font: 18px/1.35 var(--hwm-text-font, var(--font-text));
 	resize: both;
 	box-shadow: 0 3px 12px rgba(0, 0, 0, 0.16);
 }

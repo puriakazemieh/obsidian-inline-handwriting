@@ -89,6 +89,8 @@ export class DrawingCanvas {
 	private strokes: Stroke[] = [];
 	private texts: TextElement[] = [];
 	private images: ImageElement[] = [];
+	private selectedText: TextElement | null = null;
+	private textInteraction: 'move' | 'resize' | null = null;
 	private imageBitmaps = new Map<string, HTMLImageElement>();
 	private selectedImage: ImageElement | null = null;
 	private imageInteraction: 'move' | 'resize-left' | 'resize-top' | 'resize-right' | 'resize-bottom' | 'resize-nw' | 'resize-ne' | 'resize-se' | 'resize-sw' | 'crop-left' | 'crop-top' | 'crop-right' | 'crop-bottom' | null = null;
@@ -347,6 +349,7 @@ export class DrawingCanvas {
 		if (mode !== 'lasso') {
 			this.selectedStrokes.clear();
 			this.selectedImage = null;
+			this.selectedText = null;
 			this.cropMode = false;
 			this.lassoPath = [];
 			this.redraw();
@@ -371,7 +374,14 @@ export class DrawingCanvas {
 	// Restituisce true se un tratto è in corso (pointer down)
 	isPointerDown(): boolean { return this.isDrawing; }
 
-	setColor(color: string) { this.color = color; }
+	setColor(color: string) {
+		this.color = color;
+		this.textInput?.setCssProps({ '--hwm-text-color': color });
+		if (this.selectedText) {
+			this.selectedText.color = color;
+			this.pushHistory(); this.redraw(); this.changeCb?.();
+		}
+	}
 	setLineWidth(w: number) { this.lineWidth = w; }
 
 	getStrokes(): Stroke[] { return [...this.strokes]; }
@@ -511,6 +521,7 @@ export class DrawingCanvas {
 		this.images = cloneImageElements(images);
 		this.selectedImage = null;
 		this.preloadImages();
+		this.ensureContentHeight();
 		// Reset history con lo stato caricato
 		this.history = [];
 		this.historyIdx = -1;
@@ -584,6 +595,15 @@ export class DrawingCanvas {
 		this.canvas.height = Math.round(newHeight * this.dpr);
 		this.ctx.scale(this.dpr, this.dpr);
 		this.redraw();
+	}
+
+	/** Restores enough paper for imported images/PDF pages even if an older SVG viewBox was too short. */
+	private ensureContentHeight(): void {
+		let bottom = 0;
+		for (const image of this.images) bottom = Math.max(bottom, image.y + image.height);
+		for (const text of this.texts) bottom = Math.max(bottom, text.y + this.textBounds(text).height);
+		for (const stroke of this.strokes) for (const point of stroke.points) bottom = Math.max(bottom, point.y + stroke.width);
+		if (bottom + 48 > this.logicalHeight) this.resizeHeight(Math.ceil(bottom + 48));
 	}
 
 	destroy() {
@@ -708,10 +728,23 @@ export class DrawingCanvas {
 		this.isDrawing = true;
 		const pt = this.eventToPoint(e);
 		if (this.mode === 'text') {
+			const existingText = this.textAt(pt, 24);
+			if (existingText) {
+				this.isDrawing = false;
+				this.openTextInput(pt, existingText);
+				return;
+			}
 			this.isDrawing = false;
 			this.openTextInput(pt);
 			return;
 		} else if (this.mode === 'lasso') {
+			const text = this.textAt(pt, 24);
+			if (text) {
+				this.selectedText = text; this.selectedImage = null; this.selectedStrokes.clear();
+				this.textInteraction = this.isOnTextResizeHandle(text, pt) ? 'resize' : 'move';
+				this.dragStartPoint = pt; this.isDraggingSelection = true; this.redraw();
+				return;
+			}
 			if (this.cropMode && this.selectedImage) {
 				const handle = this.cropHandleAt(this.selectedImage, pt);
 				if (handle) {
@@ -724,6 +757,7 @@ export class DrawingCanvas {
 			const image = this.imageAt(pt, 36);
 			if (image) {
 				this.selectedImage = image;
+				this.selectedText = null;
 				this.selectedStrokes.clear();
 				this.imageInteraction = this.imageResizeHandleAt(image, pt) ?? 'move';
 				this.dragStartPoint = pt;
@@ -737,6 +771,7 @@ export class DrawingCanvas {
 			} else {
 				this.selectedStrokes.clear();
 				this.selectedImage = null;
+				this.selectedText = null;
 				this.lassoPath = [pt];
 				this.isDraggingSelection = false;
 				this.redraw();
@@ -810,6 +845,9 @@ export class DrawingCanvas {
 					} else if (this.imageInteraction?.startsWith('resize-')) {
 						this.resizeImage(this.selectedImage, this.imageInteraction as 'resize-left' | 'resize-top' | 'resize-right' | 'resize-bottom' | 'resize-nw' | 'resize-ne' | 'resize-se' | 'resize-sw', dx, dy);
 					} else { this.selectedImage.x += dx; this.selectedImage.y += dy; }
+				} else if (this.selectedText) {
+					if (this.textInteraction === 'resize') this.selectedText.fontSize = Math.max(10, Math.min(96, this.selectedText.fontSize + dx / 3));
+					else { this.selectedText.x += dx; this.selectedText.y += dy; }
 				} else for (const stroke of this.selectedStrokes) {
 					for (const p of stroke.points) { p.x += dx; p.y += dy; }
 				}
@@ -860,6 +898,7 @@ export class DrawingCanvas {
 			if (this.isDraggingSelection) {
 				this.isDraggingSelection = false;
 				this.imageInteraction = null;
+				this.textInteraction = null;
 				if (!this.cropMode) { this.pushHistory(); this.changeCb?.(); if (this.selectedImage) this.imageChangeCb?.(); }
 			} else if (this.lassoPath.length > 2) {
 				for (const stroke of this.strokes) {
@@ -897,16 +936,21 @@ export class DrawingCanvas {
 		if (!keepPhysicalEraser) this.restoreTemporaryEraser(e.pointerId);
 	}
 
-	private openTextInput(pt: Point) {
+	private openTextInput(pt: Point, editingText: TextElement | null = null) {
 		this.textInput?.remove();
 		const host = this.canvas.parentElement;
 		if (!host) return;
 		const input = activeDocument.createElement('textarea');
 		input.className = 'hwm_canvas-text-input';
 		input.placeholder = 'Type here…';
+		input.dir = 'auto';
+		if (editingText) input.value = editingText.text;
+		const placement = editingText ? this.textBounds(editingText) : { x: pt.x, y: pt.y };
 		input.setCssProps({
-			'--hwm-text-left': `${this.canvas.offsetLeft + pt.x * this.viewScale}px`,
-			'--hwm-text-top': `${this.canvas.offsetTop + pt.y}px`,
+			'--hwm-text-left': `${this.canvas.offsetLeft + placement.x * this.viewScale}px`,
+			'--hwm-text-top': `${this.canvas.offsetTop + placement.y}px`,
+			'--hwm-text-color': this.color,
+			'--hwm-text-font': this.getObsidianFontFamily(),
 		});
 		host.appendChild(input);
 		this.textInput = input;
@@ -918,11 +962,21 @@ export class DrawingCanvas {
 			input.remove();
 			if (this.textInput === input) this.textInput = null;
 			if (!text) return;
-			this.texts.push({
+			let committedText: TextElement;
+			if (editingText) {
+				editingText.text = text;
+				editingText.color = this.color;
+				committedText = editingText;
+			} else {
+				committedText = {
 				id: `text_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
 				x: pt.x, y: pt.y, text, color: this.color, fontSize: 18,
-			});
+				};
+				this.texts.push(committedText);
+			}
+			this.ensureContentHeight();
 			this.pushHistory();
+			this.selectedText = committedText;
 			this.redraw();
 			this.changeCb?.();
 		};
@@ -1395,14 +1449,9 @@ export class DrawingCanvas {
 	}
 
 	private isTextWithinEraser(text: TextElement, pt: Point, radius: number): boolean {
-		const lines = text.text.split('\n');
-		this.ctx.save();
-		this.ctx.font = `${text.fontSize}px sans-serif`;
-		const width = Math.max(0, ...lines.map(line => this.ctx.measureText(line).width));
-		this.ctx.restore();
-		const height = Math.max(text.fontSize, lines.length * (text.fontSize + 5));
-		return pt.x >= text.x - radius && pt.x <= text.x + width + radius
-			&& pt.y >= text.y - radius && pt.y <= text.y + height + radius;
+		const bounds = this.textBounds(text);
+		return pt.x >= bounds.x - radius && pt.x <= bounds.x + bounds.width + radius
+			&& pt.y >= bounds.y - radius && pt.y <= bounds.y + bounds.height + radius;
 	}
 
 	private imageAt(pt: Point, margin = 0): ImageElement | null {
@@ -1411,6 +1460,34 @@ export class DrawingCanvas {
 			if (pt.x >= image.x - margin && pt.x <= image.x + image.width + margin && pt.y >= image.y - margin && pt.y <= image.y + image.height + margin) return image;
 		}
 		return null;
+	}
+
+	private getObsidianFontFamily(): string {
+		const style = getComputedStyle(activeDocument.body);
+		return style.getPropertyValue('--font-text').trim() || style.fontFamily || 'system-ui, sans-serif';
+	}
+
+	private textBounds(text: TextElement) {
+		const lines = text.text.split('\n');
+		this.ctx.save(); this.ctx.font = `${text.fontSize}px ${this.getObsidianFontFamily()}`;
+		const width = Math.max(0, ...lines.map(line => this.ctx.measureText(line).width));
+		this.ctx.restore();
+		const rtl = /[\u0590-\u08ff]/.test(text.text);
+		return { x: rtl ? text.x - width : text.x, y: text.y, width, height: Math.max(text.fontSize, lines.length * (text.fontSize + 5)), rtl };
+	}
+
+	private textAt(pt: Point, margin = 0): TextElement | null {
+		for (let i = this.texts.length - 1; i >= 0; i--) {
+			const text = this.texts[i]!;
+			const bounds = this.textBounds(text);
+			if (pt.x >= bounds.x - margin && pt.x <= bounds.x + bounds.width + margin && pt.y >= bounds.y - margin && pt.y <= bounds.y + bounds.height + margin) return text;
+		}
+		return null;
+	}
+
+	private isOnTextResizeHandle(text: TextElement, pt: Point): boolean {
+		const bounds = this.textBounds(text);
+		return Math.abs(pt.x - (bounds.x + bounds.width)) < 28 && Math.abs(pt.y - (bounds.y + bounds.height)) < 28;
 	}
 
 	private imageResizeHandleAt(image: ImageElement, pt: Point): 'resize-left' | 'resize-top' | 'resize-right' | 'resize-bottom' | 'resize-nw' | 'resize-ne' | 'resize-se' | 'resize-sw' | null {
@@ -1488,6 +1565,11 @@ export class DrawingCanvas {
 
 	private onKeyDown(event: KeyboardEvent): void {
 		if (event.defaultPrevented || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement) return;
+		if ((event.key === 'Delete' || event.key === 'Backspace') && this.selectedText) {
+			this.texts = this.texts.filter(text => text !== this.selectedText);
+			this.selectedText = null; this.pushHistory(); this.redraw(); this.changeCb?.(); event.preventDefault();
+			return;
+		}
 		const modifier = event.ctrlKey || event.metaKey;
 		if (modifier && event.key.toLowerCase() === 'v' && this.imageClipboard) {
 			const image = { ...this.imageClipboard, id: `image_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, x: this.imageClipboard.x + 24, y: this.imageClipboard.y + 24 };
@@ -1598,6 +1680,7 @@ export class DrawingCanvas {
 				this.ctx.setLineDash([]);
 			}
 			if (this.selectedImage) this.drawImageSelection(this.selectedImage);
+			if (this.selectedText) this.drawTextSelection(this.selectedText);
 		}
 	}
 
@@ -1653,9 +1736,21 @@ export class DrawingCanvas {
 		ctx.save();
 		ctx.scale(this.viewScale, 1.0);
 		ctx.fillStyle = text.color;
-		ctx.font = `${text.fontSize}px sans-serif`;
+		ctx.font = `${text.fontSize}px ${this.getObsidianFontFamily()}`;
+		ctx.direction = /[\u0590-\u08ff]/.test(text.text) ? 'rtl' : 'ltr';
+		ctx.textAlign = 'start';
 		ctx.textBaseline = 'top';
 		text.text.split('\n').forEach((line, index) => ctx.fillText(line, text.x, text.y + index * (text.fontSize + 5)));
+		ctx.restore();
+	}
+
+	private drawTextSelection(text: TextElement): void {
+		const bounds = this.textBounds(text);
+		const ctx = this.ctx; ctx.save(); ctx.scale(this.viewScale, 1);
+		ctx.strokeStyle = 'rgba(33, 150, 243, 0.95)'; ctx.lineWidth = 2 / this.viewScale; ctx.setLineDash([6 / this.viewScale, 4 / this.viewScale]);
+		ctx.strokeRect(bounds.x - 4, bounds.y - 4, bounds.width + 8, bounds.height + 8); ctx.setLineDash([]);
+		const size = 14 / this.viewScale;
+		ctx.fillStyle = '#2196F3'; ctx.fillRect(bounds.x + bounds.width - size / 2, bounds.y + bounds.height - size / 2, size, size);
 		ctx.restore();
 	}
 

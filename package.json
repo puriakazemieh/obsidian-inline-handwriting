@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-inline-handwriting",
-	"version": "1.0.21",
+	"version": "1.0.25",
 	"description": "In-note handwriting canvas for drawing and annotation",
 	"main": "main.js",
 	"type": "module",

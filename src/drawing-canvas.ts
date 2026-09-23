@@ -155,6 +155,7 @@ export class DrawingCanvas {
 	private boundDown: (e: PointerEvent) => void;
 	private boundMove: (e: PointerEvent) => void;
 	private boundRawUpdate: (e: PointerEvent) => void;
+	private boundPointerOut: (e: PointerEvent) => void;
 	private boundUp: (e: PointerEvent) => void;
 	private boundContextMenu: (e: MouseEvent) => void;
 	private boundGlobalStylusState: (e: PointerEvent) => void;
@@ -183,6 +184,8 @@ export class DrawingCanvas {
 	// pointer type lets us accept the S Pen fallback without turning a finger
 	// long-press into an eraser action.
 	private recentPointer: { type: string; x: number; y: number; at: number } | null = null;
+	private recentPenHoverExit: { x: number; y: number; at: number } | null = null;
+	private lastPenContactPointerId: number | null = null;
 	// Cleanup per i listener aggiuntivi di allowFingerScroll()
 	private fingerScrollCleanup: (() => void) | null = null;
 	// Callback debug: se impostato, mostra Notice all'utente per ogni evento IME/touch
@@ -243,6 +246,7 @@ export class DrawingCanvas {
 		this.boundDown = this.onPointerDown.bind(this);
 		this.boundMove = this.onPointerMove.bind(this);
 		this.boundRawUpdate = this.onPointerRawUpdate.bind(this);
+		this.boundPointerOut = this.onPointerOut.bind(this);
 		this.boundUp = this.onPointerUp.bind(this);
 		this.boundContextMenu = this.onContextMenu.bind(this);
 		this.boundGlobalStylusState = this.onGlobalStylusState.bind(this);
@@ -262,6 +266,7 @@ export class DrawingCanvas {
 		}
 		this.canvas.addEventListener('pointermove', this.boundMove);
 		this.canvas.addEventListener('pointerrawupdate', this.boundRawUpdate);
+		this.canvas.addEventListener('pointerout', this.boundPointerOut);
 		this.canvas.addEventListener('pointerup', this.boundUp);
 		this.canvas.addEventListener('pointercancel', this.boundUp);
 		this.canvas.addEventListener('lostpointercapture', this.boundUp);
@@ -663,6 +668,7 @@ export class DrawingCanvas {
 		this.canvas.removeEventListener('pointerdown', this.boundDown);
 		this.canvas.removeEventListener('pointermove', this.boundMove);
 		this.canvas.removeEventListener('pointerrawupdate', this.boundRawUpdate);
+		this.canvas.removeEventListener('pointerout', this.boundPointerOut);
 		this.canvas.removeEventListener('pointerup', this.boundUp);
 		this.canvas.removeEventListener('pointercancel', this.boundUp);
 		this.canvas.removeEventListener('lostpointercapture', this.boundUp);
@@ -732,6 +738,29 @@ export class DrawingCanvas {
 		this.updateStylusButtonLatch(e);
 		// pointerType vuoto ("") = evento degradato da Android → trattato come penna
 		const ptype = e.pointerType || 'pen';
+		// Samsung S Pen and most styluses expose their side/eraser button as a
+		// secondary (or eraser) pointer button. Switch to eraser immediately.
+		const hasExplicitEraserButton = this.hasExplicitStylusEraserButton(e);
+		const stylusEraser = this.isStylusEraserButton(e);
+		const armedContextEraser = this.temporaryEraserUsesContextHint
+			&& this.temporaryEraserPreviousMode !== null
+			&& this.temporaryEraserPointerId === null;
+		// On the reported Samsung WebView, pressing the side button ended pen
+		// hover and the following contact arrived as pointerType=touch with no
+		// barrel-button bit. A nearby immediate pen-hover exit identifies that
+		// converted contact without treating ordinary fingers as an eraser.
+		const convertedPenEraser = this.mobileMode && ptype === 'touch' && this.consumePenHoverExit(e);
+		const useTemporaryEraser = stylusEraser || armedContextEraser || convertedPenEraser;
+		if (useTemporaryEraser) {
+			// Pressing a pen barrel button while hovering is itself a pointerdown.
+			// It arms erasing but is not yet a drawing gesture. Contact may arrive
+			// later only as pointermove because the pointer is already active.
+			e.preventDefault();
+			if (this.mobileMode) e.stopPropagation();
+			if (convertedPenEraser) this.debugFn?.('Pen hover became touch contact → temporary eraser');
+			this.beginTemporaryEraserContact(e, !hasExplicitEraserButton);
+			return;
+		}
 		const touchedImage = this.mobileMode && ptype === 'touch' ? this.imageAt(this.eventToPoint(e)) : null;
 		if (touchedImage) {
 			e.preventDefault();
@@ -741,23 +770,6 @@ export class DrawingCanvas {
 				this.selectedImage = touchedImage; this.selectedStrokes.clear(); this.selectMode('lasso');
 				this.showImageMenu({ clientX: e.clientX, clientY: e.clientY } as MouseEvent);
 			}, 650);
-			return;
-		}
-		// Samsung S Pen and most styluses expose their side/eraser button as a
-		// secondary (or eraser) pointer button. Switch to eraser immediately.
-		const hasExplicitEraserButton = this.hasExplicitStylusEraserButton(e);
-		const stylusEraser = this.isStylusEraserButton(e);
-		const armedContextEraser = this.temporaryEraserUsesContextHint
-			&& this.temporaryEraserPreviousMode !== null
-			&& this.temporaryEraserPointerId === null;
-		const useTemporaryEraser = stylusEraser || armedContextEraser;
-		if (useTemporaryEraser) {
-			// Pressing a pen barrel button while hovering is itself a pointerdown.
-			// It arms erasing but is not yet a drawing gesture. Contact may arrive
-			// later only as pointermove because the pointer is already active.
-			e.preventDefault();
-			if (this.mobileMode) e.stopPropagation();
-			this.beginTemporaryEraserContact(e, !hasExplicitEraserButton);
 			return;
 		}
 
@@ -950,6 +962,9 @@ export class DrawingCanvas {
 	private onPointerUp(e: PointerEvent) {
 		if (this.imageLongPressPointerId === e.pointerId) this.clearImageLongPress();
 		if (this.activePointerId !== null && e.pointerId !== this.activePointerId) return;
+		if (e.type === 'pointerup' && e.pointerType === 'pen' && this.isDrawing) {
+			this.lastPenContactPointerId = e.pointerId;
+		}
 		this.updateStylusButtonLatch(e);
 		// Do not let a compatibility latch survive the end of the gesture unless
 		// the event still reports the physical side-button state explicitly.
@@ -1371,6 +1386,19 @@ export class DrawingCanvas {
 
 	private rememberPointer(e: PointerEvent): void {
 		this.recentPointer = { type: e.pointerType || 'pen', x: e.clientX, y: e.clientY, at: Date.now() };
+	}
+
+	private onPointerOut(e: PointerEvent): void {
+		if (!this.mobileMode || e.pointerType !== 'pen' || this.isDrawing || e.pressure > 0
+			|| e.pointerId === this.lastPenContactPointerId) return;
+		this.recentPenHoverExit = { x: e.clientX, y: e.clientY, at: Date.now() };
+	}
+
+	private consumePenHoverExit(e: PointerEvent): boolean {
+		const hover = this.recentPenHoverExit;
+		this.recentPenHoverExit = null;
+		return !!hover && Date.now() - hover.at < 1000
+			&& Math.hypot(e.clientX - hover.x, e.clientY - hover.y) < 72;
 	}
 
 	private isRecentStylusContextMenu(e: MouseEvent): boolean {

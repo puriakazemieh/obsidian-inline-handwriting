@@ -252,6 +252,21 @@ export async function buildEditorUI(opts: {
 
 	// --- 3. CANVAS AREA ---
 	const canvasWrap = el.createDiv({ cls: 'hwm_main-canvas-area' });
+	let debugFn: ((msg: string) => void) | null = null;
+	if (plugin.settings.debugMode) {
+		const diagnostic = canvasWrap.createDiv({ cls: 'hwm_input-diagnostic' });
+		const header = diagnostic.createDiv({ cls: 'hwm_input-diagnostic-header' });
+		header.createSpan({ text: 'S Pen input events' });
+		const copy = header.createEl('button', { text: 'Copy' });
+		const output = diagnostic.createEl('pre');
+		const lines: string[] = [];
+		debugFn = (message: string) => {
+			lines.push(message);
+			if (lines.length > 80) lines.shift();
+			output.textContent = lines.join('\n');
+		};
+		copy.addEventListener('click', () => { void navigator.clipboard.writeText(lines.join('\n')); });
+	}
 	const scrollWrap = canvasWrap.createDiv({ cls: 'hwm_editor-scroll' });
 	const canvasInnerWrap = scrollWrap.createDiv({ cls: 'hwm_canvas-wrap' });
 
@@ -259,8 +274,6 @@ export async function buildEditorUI(opts: {
 	const { canvasWidth, canvasHeight } = plugin.settings;
 	const w = savedW ?? canvasWidth;
 	const h = savedH ?? canvasHeight;
-	const debugFn = plugin.settings.debugMode ? (msg: string) => new Notice(msg, 3000) : null;
-
 	const canvas = new DrawingCanvas(canvasInnerWrap, w, h, canvasHeight, isMobile, debugFn);
 	// New images (including clipboard images) are inserted into the visible paper area.
 	const updateImageInsertionPoint = () => canvas.setImageInsertionY(canvas.getVisibleInsertionY());

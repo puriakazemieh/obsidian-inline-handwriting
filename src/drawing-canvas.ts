@@ -86,6 +86,15 @@ interface CanvasState {
 export class DrawingCanvas {
 	private canvas: HTMLCanvasElement;
 	private ctx: CanvasRenderingContext2D;
+	private readonly baseCtx: CanvasRenderingContext2D;
+	private readonly detailCanvas: HTMLCanvasElement;
+	private readonly detailCtx: CanvasRenderingContext2D;
+	private detailY = 0;
+	private detailHeight = 0;
+	private detailDpr = 1;
+	private detailFrame: number | null = null;
+	private readonly boundDetailRefresh: () => void;
+	private lastDiagnosticState = '';
 	private strokes: Stroke[] = [];
 	private texts: TextElement[] = [];
 	private images: ImageElement[] = [];
@@ -216,8 +225,17 @@ export class DrawingCanvas {
 		container.appendChild(this.canvas);
 
 		this.ctx = this.canvas.getContext('2d')!;
+		this.baseCtx = this.ctx;
+		this.detailCanvas = activeDocument.createElement('canvas');
+		this.detailCanvas.classList.add('hwm_canvas-detail');
+		container.appendChild(this.detailCanvas);
+		this.detailCtx = this.detailCanvas.getContext('2d')!;
+		this.boundDetailRefresh = this.scheduleDetailRefresh.bind(this);
+		activeDocument.addEventListener('scroll', this.boundDetailRefresh, true);
+		window.addEventListener('resize', this.boundDetailRefresh);
 		this.resetCanvasBuffer();
 		this.clearBackground();
+		this.scheduleDetailRefresh();
 
 		// Stato iniziale nella history (canvas vuoto)
 		this.pushHistory();
@@ -233,12 +251,25 @@ export class DrawingCanvas {
 		this.boundPaste = this.onPaste.bind(this);
 
 		this.canvas.addEventListener('pointerdown', this.boundDown);
+		if (this.debugFn) {
+			for (const type of ['pointerdown', 'pointerup', 'pointermove', 'pointerrawupdate', 'pointerover', 'pointerout']) {
+				this.canvas.addEventListener(type, event => this.logPointerDiagnostic(event as PointerEvent), true);
+			}
+			this.canvas.addEventListener('contextmenu', event => {
+				const mouse = event as MouseEvent;
+				this.debugFn?.(`contextmenu button=${mouse.button} buttons=${mouse.buttons}`);
+			}, true);
+		}
 		this.canvas.addEventListener('pointermove', this.boundMove);
 		this.canvas.addEventListener('pointerrawupdate', this.boundRawUpdate);
 		this.canvas.addEventListener('pointerup', this.boundUp);
 		this.canvas.addEventListener('pointercancel', this.boundUp);
 		this.canvas.addEventListener('lostpointercapture', this.boundUp);
-		this.canvas.addEventListener('pointerleave', this.boundUp);
+		this.canvas.addEventListener('pointerleave', event => {
+			// Hover can leave briefly between the side-button press and tip contact.
+			// Only finish a real stroke; keep the armed eraser through hover exit.
+			if (this.isDrawing) this.onPointerUp(event);
+		});
 		// Some Samsung WebViews surface the S Pen side key only as a context-menu event.
 		this.canvas.addEventListener('contextmenu', this.boundContextMenu, true);
 		// Release may be targeted outside the canvas if Android drops pointer
@@ -276,6 +307,7 @@ export class DrawingCanvas {
 		this.viewScale    = this.logicalWidth / this.worldWidth;
 		this.canvas.style.width = displayWidth + 'px';
 		this.resetCanvasBuffer();
+		this.refreshDetailCanvas();
 		this.redraw();
 	}
 	allowFingerScroll(scrollContainer: HTMLElement) {
@@ -599,10 +631,14 @@ export class DrawingCanvas {
 		this.logicalHeight = newHeight;
 		this.canvas.style.height = newHeight + 'px';
 		this.resetCanvasBuffer();
+		this.refreshDetailCanvas();
 		this.redraw();
 		// redraw() contains completed strokes only. Keep the active pen stroke
 		// visible when auto-expansion occurs in the middle of a gesture.
-		if (this.currentStroke) this.drawFullStroke(this.currentStroke);
+		if (this.currentStroke) {
+			this.drawFullStroke(this.currentStroke);
+			this.drawOnDetail(() => this.drawFullStroke(this.currentStroke!));
+		}
 	}
 
 	/** Restores enough paper for imported images/PDF pages even if an older SVG viewBox was too short. */
@@ -615,6 +651,10 @@ export class DrawingCanvas {
 	}
 
 	destroy() {
+		if (this.detailFrame !== null) window.cancelAnimationFrame(this.detailFrame);
+		activeDocument.removeEventListener('scroll', this.boundDetailRefresh, true);
+		window.removeEventListener('resize', this.boundDetailRefresh);
+		this.detailCanvas.remove();
 		this.textInput?.remove();
 		this.closeImageMenu();
 		this.clearImageLongPress();
@@ -626,7 +666,6 @@ export class DrawingCanvas {
 		this.canvas.removeEventListener('pointerup', this.boundUp);
 		this.canvas.removeEventListener('pointercancel', this.boundUp);
 		this.canvas.removeEventListener('lostpointercapture', this.boundUp);
-		this.canvas.removeEventListener('pointerleave', this.boundUp);
 		this.canvas.removeEventListener('contextmenu', this.boundContextMenu, true);
 		activeDocument.removeEventListener('pointermove', this.boundGlobalStylusState, true);
 		activeDocument.removeEventListener('pointerup', this.boundGlobalStylusState, true);
@@ -971,6 +1010,13 @@ export class DrawingCanvas {
 			this.extendCurrentStroke(this.eventToPoint(e));
 			if (this.currentStroke.points.length >= 2) {
 				this.strokes.push(this.currentStroke);
+				// Complete the final curve on both rendering surfaces. The incremental
+				// midpoint path otherwise leaves a pale/broken tail until the next redraw.
+				if (this.mode === 'highlighter') this.redraw();
+				else {
+					this.drawFullStroke(this.currentStroke);
+					this.redrawDetail();
+				}
 				// Salva nella history dopo ogni tratto completato
 				this.pushHistory();
 				this.changeCb?.();
@@ -1428,7 +1474,11 @@ export class DrawingCanvas {
 			// incremental segments otherwise produce a dotted highlighter effect.
 			this.redraw();
 			this.drawFullStroke(stroke);
-		} else this.drawSegment(stroke);
+			this.drawOnDetail(() => this.drawFullStroke(stroke));
+		} else {
+			this.drawSegment(stroke);
+			this.drawOnDetail(() => this.drawSegment(stroke));
+		}
 		this.checkAutoExpand(pt);
 	}
 
@@ -1445,7 +1495,80 @@ export class DrawingCanvas {
 		this.canvas.height = Math.max(1, Math.round(this.logicalHeight * this.dpr));
 		// Assigning width/height resets the context. setTransform prevents scale
 		// accumulation and keeps all drawing coordinates in CSS pixels.
-		this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+		this.baseCtx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+	}
+
+	private scheduleDetailRefresh(): void {
+		if (this.detailFrame !== null) return;
+		this.detailFrame = window.requestAnimationFrame(() => {
+			this.detailFrame = null;
+			this.refreshDetailCanvas();
+		});
+	}
+
+	/** Render only the visible paper at screen resolution over the bounded full-page bitmap. */
+	private refreshDetailCanvas(): void {
+		const rect = this.canvas.getBoundingClientRect();
+		let top = Math.max(0, rect.top);
+		let bottom = Math.min(window.innerHeight, rect.bottom);
+		for (let parent = this.canvas.parentElement; parent; parent = parent.parentElement) {
+			const overflow = getComputedStyle(parent).overflowY;
+			if (!/^(auto|scroll|hidden|clip)$/.test(overflow)) continue;
+			const clip = parent.getBoundingClientRect();
+			top = Math.max(top, clip.top);
+			bottom = Math.min(bottom, clip.bottom);
+		}
+		if (bottom <= top || rect.width <= 0) {
+			this.detailCanvas.classList.add('hwm_canvas-detail--hidden');
+			this.detailHeight = 0;
+			return;
+		}
+		const visibleTop = Math.max(0, top - rect.top);
+		const visibleBottom = Math.min(this.logicalHeight, bottom - rect.top);
+		const nextY = Math.floor(Math.max(0, visibleTop - 160) / 256) * 256;
+		const nextHeight = Math.ceil(Math.min(this.logicalHeight - nextY,
+			Math.max(512, visibleBottom - nextY + 160)));
+		const screenDpr = Math.max(1, window.devicePixelRatio || 1);
+		const nextDpr = Math.min(screenDpr,
+			Math.sqrt(12_000_000 / Math.max(1, this.logicalWidth * nextHeight)),
+			8_192 / Math.max(1, this.logicalWidth), 8_192 / Math.max(1, nextHeight));
+		this.detailCanvas.classList.remove('hwm_canvas-detail--hidden');
+		this.detailCanvas.style.left = this.canvas.offsetLeft + 'px';
+		this.detailCanvas.style.top = this.canvas.offsetTop + nextY + 'px';
+		this.detailCanvas.style.width = this.logicalWidth + 'px';
+		this.detailCanvas.style.height = nextHeight + 'px';
+		this.detailCanvas.style.backgroundColor = this.bgColor === 'transparent' ? 'var(--background-primary)' : '';
+		if (nextY === this.detailY && nextHeight === this.detailHeight && nextDpr === this.detailDpr
+			&& this.detailCanvas.width === Math.round(this.logicalWidth * nextDpr)) return;
+		this.detailY = nextY;
+		this.detailHeight = nextHeight;
+		this.detailDpr = nextDpr;
+		this.detailCanvas.width = Math.max(1, Math.round(this.logicalWidth * nextDpr));
+		this.detailCanvas.height = Math.max(1, Math.round(nextHeight * nextDpr));
+		this.detailCtx.setTransform(nextDpr, 0, 0, nextDpr, 0, -nextY * nextDpr);
+		this.redrawDetail();
+	}
+
+	private drawOnDetail(draw: () => void): void {
+		if (this.detailHeight <= 0) return;
+		this.ctx = this.detailCtx;
+		try { draw(); } finally { this.ctx = this.baseCtx; }
+	}
+
+	private redrawDetail(): void {
+		this.drawOnDetail(() => {
+			this.renderScene();
+			if (this.currentStroke) this.drawFullStroke(this.currentStroke);
+		});
+	}
+
+	private logPointerDiagnostic(event: PointerEvent): void {
+		const state = `${event.type} ${event.pointerType || 'unknown'} id=${event.pointerId} button=${event.button} buttons=${event.buttons} pressure=${event.pressure.toFixed(2)}`;
+		// Keep moving samples compact while still showing every button transition.
+		const key = `${event.pointerType}:${event.button}:${event.buttons}`;
+		if ((event.type === 'pointermove' || event.type === 'pointerrawupdate') && key === this.lastDiagnosticState) return;
+		this.lastDiagnosticState = key;
+		this.debugFn?.(state);
 	}
 
 	/* --- Coordinate --- */
@@ -1686,6 +1809,10 @@ export class DrawingCanvas {
 		// Usa pixel logici: ctx.scale(dpr, dpr) è già applicato nel constructor/resize
 		const w = this.logicalWidth;
 		const h = this.logicalHeight;
+		const visibleTop = this.ctx === this.detailCtx ? this.detailY : 0;
+		const visibleBottom = this.ctx === this.detailCtx ? this.detailY + this.detailHeight : h;
+		const firstLine = Math.max(this.lineSpacing,
+			Math.ceil(visibleTop / this.lineSpacing) * this.lineSpacing);
 
 		// Filling with a transparent color does not remove pixels already painted.
 		// Clear first so switching from a solid paper color is truly transparent.
@@ -1697,7 +1824,7 @@ export class DrawingCanvas {
 		this.ctx.fillStyle = this.lineColor;
 		this.ctx.lineWidth = 0.5;
 		if (this.backgroundPattern === 'ruled' || this.backgroundPattern === 'grid') {
-			for (let y = this.lineSpacing; y < h; y += this.lineSpacing) {
+			for (let y = firstLine; y < visibleBottom; y += this.lineSpacing) {
 				this.ctx.beginPath(); this.ctx.moveTo(0, y); this.ctx.lineTo(w, y); this.ctx.stroke();
 			}
 		}
@@ -1707,7 +1834,7 @@ export class DrawingCanvas {
 			}
 		}
 		if (this.backgroundPattern === 'dots') {
-			for (let y = this.lineSpacing; y < h; y += this.lineSpacing) {
+			for (let y = firstLine; y < visibleBottom; y += this.lineSpacing) {
 				for (let x = this.lineSpacing; x < w; x += this.lineSpacing) {
 					this.ctx.beginPath(); this.ctx.arc(x, y, 1, 0, Math.PI * 2); this.ctx.fill();
 				}
@@ -1716,9 +1843,32 @@ export class DrawingCanvas {
 	}
 
 	private redraw() {
+		this.ctx = this.baseCtx;
+		this.renderScene();
+		this.redrawDetail();
+	}
+
+	private renderScene() {
 		this.clearBackground();
-		for (const image of this.images) this.drawImageElement(image);
+		const visibleTop = this.ctx === this.detailCtx ? this.detailY : 0;
+		const visibleBottom = this.ctx === this.detailCtx ? this.detailY + this.detailHeight : this.logicalHeight;
+		for (const image of this.images) {
+			if (image.y + image.height < visibleTop || image.y > visibleBottom) continue;
+			this.drawImageElement(image);
+		}
 		for (const stroke of this.strokes) {
+			if (this.ctx === this.detailCtx) {
+				let intersects = false;
+				let below = false, above = false;
+				for (const point of stroke.points) {
+					if (point.y >= visibleTop - stroke.width && point.y <= visibleBottom + stroke.width) {
+						intersects = true; break;
+					}
+					if (point.y < visibleTop) above = true;
+					else below = true;
+				}
+				if (!intersects && !(above && below)) continue;
+			}
 			this.drawFullStroke(stroke);
 		}
 		for (const text of this.texts) this.drawTextElement(text);

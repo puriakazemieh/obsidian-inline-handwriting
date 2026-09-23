@@ -280,6 +280,31 @@
 	touch-action: none;
 }
 .hwm_canvas--eraser { cursor: cell; }
+.hwm_canvas-detail {
+	position: absolute;
+	pointer-events: none;
+	z-index: 1;
+	max-width: 100%;
+}
+.hwm_canvas-detail--hidden { display: none; }
+.hwm_input-diagnostic {
+	padding: 6px 10px;
+	background: var(--background-secondary);
+	border-bottom: 1px solid var(--background-modifier-border);
+	font-size: 11px;
+}
+.hwm_input-diagnostic-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+.hwm_input-diagnostic pre {
+	max-height: 88px;
+	margin: 4px 0 0;
+	overflow: auto;
+	user-select: text;
+	white-space: pre-wrap;
+}
 
 /* --- Handle di resize in basso --- */
 .hwm_resize-handle {

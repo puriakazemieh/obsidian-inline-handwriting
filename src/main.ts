@@ -13,7 +13,7 @@ import { DEFAULT_SETTINGS, HandwritingSettings, HandwritingSettingTab } from './
 import { registerEmbed, insertHandwritingBlock } from './embed';
 import { VIEW_TYPE_HANDWRITING, DrawingEditorView } from './editor-view';
 import { registerInlineLivePreview } from './inline-live-preview';
-import { ensureHandwritingFolder } from './storage';
+import { hideExistingHandwritingFromGallery } from './storage';
 
 export default class HandwritingPlugin extends Plugin {
 	settings: HandwritingSettings;
@@ -80,10 +80,7 @@ export default class HandwritingPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
-		// Also cover drawings made before this version, including the old folder.
-		for (const folder of new Set([this.settings.svgFolder, '_inline_handwriting', '_handwriting'])) {
-			await ensureHandwritingFolder(this.app, folder, false);
-		}
+		await hideExistingHandwritingFromGallery(this.app, this.settings.svgFolder);
 
 		// Applica la lingua interfaccia salvata (o la lingua di sistema se 'auto')
 		setLocale(this.settings.uiLanguage);

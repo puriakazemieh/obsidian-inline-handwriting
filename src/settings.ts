@@ -1,6 +1,7 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import type HandwritingPlugin from './main';
 import { t, setLocale, availableLocales, localeNames } from './i18n';
+import { ensureHandwritingFolder } from './storage';
 
 export type BgMode = 'light' | 'dark' | 'auto';
 
@@ -132,7 +133,18 @@ export class HandwritingSettingTab extends PluginSettingTab {
 				.setPlaceholder('_inline_handwriting')
 				.setValue(this.plugin.settings.svgFolder)
 				.onChange(async value => {
-					this.plugin.settings.svgFolder = value || '_inline_handwriting';
+						this.plugin.settings.svgFolder = value || '_inline_handwriting';
+						await this.plugin.saveSettings();
+						await ensureHandwritingFolder(this.app, this.plugin.settings.svgFolder, false);
+					}));
+
+		new Setting(containerEl)
+			.setName('S pen input diagnostics')
+			.setDesc('Show the button and pointer events received by Obsidian while drawing. Reopen the drawing after changing this setting.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.debugMode)
+				.onChange(async value => {
+					this.plugin.settings.debugMode = value;
 					await this.plugin.saveSettings();
 				}));
 

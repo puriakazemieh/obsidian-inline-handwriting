@@ -16,3 +16,14 @@ export async function ensureHandwritingFolder(app: App, folderPath: string, crea
 	const marker = `${folder}/.nomedia`;
 	if (!(await app.vault.adapter.exists(marker))) await app.vault.adapter.write(marker, '');
 }
+
+/** Add media-scan markers to folders containing drawings from older installs. */
+export async function hideExistingHandwritingFromGallery(app: App, configuredFolder: string): Promise<void> {
+	const folders = new Set([configuredFolder, '_inline_handwriting', '_handwriting']);
+	for (const file of app.vault.getFiles()) {
+		if (file.extension !== 'svg' || !/^(hw_|HTMD_)/i.test(file.basename)) continue;
+		// Never hide the entire vault if someone saved a drawing at its root.
+		if (file.parent?.path && file.parent.path !== '/') folders.add(file.parent.path);
+	}
+	for (const folder of folders) await ensureHandwritingFolder(app, folder, false);
+}

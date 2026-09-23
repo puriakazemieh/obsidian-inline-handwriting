@@ -266,6 +266,7 @@ export class DrawingCanvas {
 		}
 		this.canvas.addEventListener('pointermove', this.boundMove);
 		this.canvas.addEventListener('pointerrawupdate', this.boundRawUpdate);
+		this.canvas.addEventListener('pointerover', this.boundRawUpdate);
 		this.canvas.addEventListener('pointerout', this.boundPointerOut);
 		this.canvas.addEventListener('pointerup', this.boundUp);
 		this.canvas.addEventListener('pointercancel', this.boundUp);
@@ -668,6 +669,7 @@ export class DrawingCanvas {
 		this.canvas.removeEventListener('pointerdown', this.boundDown);
 		this.canvas.removeEventListener('pointermove', this.boundMove);
 		this.canvas.removeEventListener('pointerrawupdate', this.boundRawUpdate);
+		this.canvas.removeEventListener('pointerover', this.boundRawUpdate);
 		this.canvas.removeEventListener('pointerout', this.boundPointerOut);
 		this.canvas.removeEventListener('pointerup', this.boundUp);
 		this.canvas.removeEventListener('pointercancel', this.boundUp);
@@ -735,6 +737,8 @@ export class DrawingCanvas {
 	private onPointerDown(e: PointerEvent) {
 		this.rememberPointer(e);
 		if (!this.cropMode) this.closeImageMenu();
+		const armedHoverEraser = e.pointerType === 'pen'
+			&& this.stylusButtonHeld && this.temporaryEraserPreviousMode !== null;
 		this.updateStylusButtonLatch(e);
 		// pointerType vuoto ("") = evento degradato da Android → trattato come penna
 		const ptype = e.pointerType || 'pen';
@@ -750,7 +754,7 @@ export class DrawingCanvas {
 		// barrel-button bit. A nearby immediate pen-hover exit identifies that
 		// converted contact without treating ordinary fingers as an eraser.
 		const convertedPenEraser = this.mobileMode && ptype === 'touch' && this.consumePenHoverExit(e);
-		const useTemporaryEraser = stylusEraser || armedContextEraser || convertedPenEraser;
+		const useTemporaryEraser = stylusEraser || armedContextEraser || convertedPenEraser || armedHoverEraser;
 		if (useTemporaryEraser) {
 			// Pressing a pen barrel button while hovering is itself a pointerdown.
 			// It arms erasing but is not yet a drawing gesture. Contact may arrive
@@ -1178,9 +1182,16 @@ export class DrawingCanvas {
 		const pointerType = e.pointerType || 'pen';
 		if (pointerType !== 'pen'
 			&& !(this.mobileMode && (pointerType === 'mouse' || pointerType === 'touch'))) return false;
-		const sideMaskDown = (e.buttons & (2 | 32 | 64)) !== 0;
+		// This Samsung WebView reports the barrel key as buttons=1 while the
+		// pen is hovering at pressure=0. Normal tip contact has a pointerdown.
+		const hoverBarrelDown = this.mobileMode && pointerType === 'pen'
+			&& this.activePointerId === null && e.pressure === 0
+			&& (e.type === 'pointerrawupdate' || e.type === 'pointermove' || e.type === 'pointerover')
+			&& (e.buttons & 1) !== 0;
+		const sideMaskDown = (e.buttons & (2 | 32 | 64)) !== 0 || hoverBarrelDown;
 		const sideTransition = e.button === 2 || e.button === 5;
 		if (sideMaskDown) {
+			if (hoverBarrelDown && !this.stylusButtonHeld) this.debugFn?.('S Pen hover button → eraser');
 			this.stylusButtonHeld = true;
 			this.stylusButtonMaskObserved = true;
 			this.stylusButtonPointerId = e.pointerId;
@@ -1189,6 +1200,7 @@ export class DrawingCanvas {
 		// Once the browser has reported the barrel bit, its disappearance is a
 		// reliable release even if the pen tip remains on the glass.
 		if (this.stylusButtonMaskObserved && this.stylusButtonHeld) {
+			if (pointerType === 'pen' && e.pressure === 0) this.debugFn?.('S Pen hover button released → pen');
 			this.stylusButtonHeld = false;
 			this.stylusButtonMaskObserved = false;
 			this.stylusButtonPointerId = null;
@@ -1242,6 +1254,8 @@ export class DrawingCanvas {
 	private isPointerInContact(e: PointerEvent): boolean {
 		const pointerType = e.pointerType || 'pen';
 		if (pointerType === 'touch') return e.type !== 'pointerup' && e.type !== 'pointercancel';
+		if (pointerType === 'pen' && e.pressure === 0 && !this.isDrawing
+			&& e.type !== 'pointerdown') return false;
 		// Pressure distinguishes S Pen contact from a side-button pointerdown while
 		// hovering. The primary-contact bit covers devices without pressure data.
 		return e.pressure > 0 || (e.buttons & 1) !== 0;
@@ -1349,6 +1363,10 @@ export class DrawingCanvas {
 			this.temporaryEraserPreviousMode = this.mode;
 			this.eraserChanged = false;
 			this.temporaryEraserUsesContextHint = fromContextHint;
+		} else if (fromContextHint) {
+			// The hover button bit can disappear when Android allocates a new
+			// touch pointer. Keep erasing until that contact ends.
+			this.temporaryEraserUsesContextHint = true;
 		} else if (!fromContextHint) {
 			// A real button bit supersedes the less precise contextmenu fallback and
 			// gives us an immediate release signal on the following pointermove.
@@ -1391,7 +1409,19 @@ export class DrawingCanvas {
 	private onPointerOut(e: PointerEvent): void {
 		if (!this.mobileMode || e.pointerType !== 'pen' || this.isDrawing || e.pressure > 0
 			|| e.pointerId === this.lastPenContactPointerId) return;
+		if (!this.stylusButtonHeld || this.stylusButtonPointerId !== e.pointerId) return;
 		this.recentPenHoverExit = { x: e.clientX, y: e.clientY, at: Date.now() };
+		// Android changes this hover pointer into a new touch pointer at contact.
+		// Preserve the armed eraser briefly across that pointer-id transition.
+		this.temporaryEraserPointerId = null;
+		if (this.contextEraserArmTimer !== null) window.clearTimeout(this.contextEraserArmTimer);
+		this.contextEraserArmTimer = window.setTimeout(() => {
+			this.contextEraserArmTimer = null;
+			if (this.temporaryEraserPointerId !== null) return;
+			const previousMode = this.temporaryEraserPreviousMode;
+			this.clearTemporaryEraserState();
+			if (previousMode) this.setMode(previousMode);
+		}, 1200);
 	}
 
 	private consumePenHoverExit(e: PointerEvent): boolean {

@@ -1,7 +1,7 @@
 import { Notice, TFile } from 'obsidian';
 import type HandwritingPlugin from './main';
 import { DrawingCanvas } from './drawing-canvas';
-import { buildEditorUI, drawingCanvasToSvg, replaceInMdFile, saveSvgToDisk } from './editor-view';
+import { buildEditorUI, replaceInMdFile, saveSvgToDisk } from './editor-view';
 import { t } from './i18n';
 
 /** A canvas editor embedded directly in a Markdown render/widget node. */
@@ -60,11 +60,9 @@ export class InlineDrawingEditor {
 		this.canvas = canvas;
 		this.bgModeListener = bgModeListener;
 		canvas.onChange(() => {
-			// Publish the new state synchronously. The next Obsidian mode can mount
-			// before the debounced vault write has completed.
-			const svg = drawingCanvasToSvg(canvas);
-			this.plugin.cacheSvgSnapshot(this.svgPath, svg);
-			this.plugin.refreshPreview(this.embedId, svg);
+			// Serialising every page into SVG after every pen-up becomes expensive on
+			// long notes and blocks the next S Pen event. save() still snapshots the
+			// current canvas before writing, and close() always flushes it.
 			this.scheduleSave();
 		});
 		canvas.onImageChange(() => { void this.save(); });

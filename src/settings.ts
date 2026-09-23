@@ -8,6 +8,8 @@ export interface HandwritingSettings {
 	svgFolder: string;
 	canvasWidth: number;
 	canvasHeight: number;
+	/** Default paper-rule spacing used by newly created handwriting blocks. */
+	defaultLineSpacing: number;
 	bgMode: BgMode;
 	debugMode: boolean;
 	uiLanguage: string;
@@ -88,6 +90,7 @@ export const DEFAULT_SETTINGS: HandwritingSettings = {
 	svgFolder: '_inline_handwriting',
 	canvasWidth: 794,
 	canvasHeight: 1123,
+	defaultLineSpacing: 52,
 	bgMode: 'auto',
 	debugMode: false,
 	uiLanguage: 'auto',
@@ -154,6 +157,20 @@ export class HandwritingSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}
 			}));
+
+		new Setting(containerEl)
+			.setName('Default line spacing')
+			.setDesc('Spacing for the ruled, grid, and dot paper in new handwriting blocks (12–120 px). Existing blocks keep their own spacing.')
+			.addText(text => text
+				.setPlaceholder('52')
+				.setValue(String(this.plugin.settings.defaultLineSpacing))
+				.onChange(async value => {
+					const spacing = parseInt(value);
+					if (!isNaN(spacing) && spacing >= 12 && spacing <= 120) {
+						this.plugin.settings.defaultLineSpacing = spacing;
+						await this.plugin.saveSettings();
+					}
+				}));
 
 		new Setting(containerEl)
 			.setName(t('bg_mode_name'))

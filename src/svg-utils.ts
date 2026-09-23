@@ -84,9 +84,16 @@ export function strokesToSvg(
 	const imageNodes = images.map(image =>
 		`  <image href="${escapeXml(image.src)}" x="${r(image.x)}" y="${r(image.y)}" width="${r(image.width)}" height="${r(image.height)}" preserveAspectRatio="none"/>`
 	);
-	const textNodes = texts.flatMap(text => text.text.split('\n').map((line, index) =>
-		`  <text x="${r(text.x)}" y="${r(text.y + index * (text.fontSize + 5))}" fill="${text.color}" font-size="${text.fontSize}" font-family="system-ui, sans-serif" dominant-baseline="hanging">${escapeXml(line)}</text>`
-	));
+	const textNodes = texts.flatMap(text => {
+		const rtl = /[\u0590-\u08ff]/.test(text.text);
+		// Canvas respects ctx.direction, but SVG defaults to left-to-right unless
+		// direction and anchor are written explicitly. Persist both so Persian text
+		// remains right-aligned after leaving the typing editor and in previews.
+		const direction = rtl ? ' direction="rtl" text-anchor="start"' : '';
+		return text.text.split('\n').map((line, index) =>
+			`  <text x="${r(text.x)}" y="${r(text.y + index * (text.fontSize + 5))}" fill="${text.color}" font-size="${text.fontSize}" font-family="system-ui, sans-serif" dominant-baseline="hanging"${direction}>${escapeXml(line)}</text>`
+		);
+	});
 
 	// Righe orizzontali (foglio a righe) — stessa spaziatura del canvas
 	const safeSpacing = Math.max(12, Math.min(120, spacing));

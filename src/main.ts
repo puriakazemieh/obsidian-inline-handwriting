@@ -13,6 +13,7 @@ import { DEFAULT_SETTINGS, HandwritingSettings, HandwritingSettingTab } from './
 import { registerEmbed, insertHandwritingBlock } from './embed';
 import { VIEW_TYPE_HANDWRITING, DrawingEditorView } from './editor-view';
 import { registerInlineLivePreview } from './inline-live-preview';
+import { ensureHandwritingFolder } from './storage';
 
 export default class HandwritingPlugin extends Plugin {
 	settings: HandwritingSettings;
@@ -79,6 +80,10 @@ export default class HandwritingPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
+		// Also cover drawings made before this version, including the old folder.
+		for (const folder of new Set([this.settings.svgFolder, '_inline_handwriting', '_handwriting'])) {
+			await ensureHandwritingFolder(this.app, folder, false);
+		}
 
 		// Applica la lingua interfaccia salvata (o la lingua di sistema se 'auto')
 		setLocale(this.settings.uiLanguage);
@@ -203,6 +208,12 @@ export default class HandwritingPlugin extends Plugin {
 		if (this.settings.canvasHeight < 500) {
 			this.settings.canvasHeight = 1123;
 		}
+		// Older installations did not store this setting. Keep the new requested
+		// default while accepting a manually edited settings file safely.
+		if (!Number.isFinite(this.settings.defaultLineSpacing)) {
+			this.settings.defaultLineSpacing = 52;
+		}
+		this.settings.defaultLineSpacing = Math.max(12, Math.min(120, this.settings.defaultLineSpacing));
 		// This fork must be able to run beside HandTranscriptMd. Move its fresh
 		// default storage away from the upstream plugin's _handwriting folder once.
 		if (!this.settings.storageNamespaceMigrated) {

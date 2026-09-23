@@ -41,6 +41,10 @@ After the plugin has been accepted, open **Settings → Community plugins**, sea
 3. Select **Edit** on the inserted drawing, or double-click the drawing, to open the canvas.
 4. Draw, then use **Save**. The drawing is stored as an SVG under `_inline_handwriting/` by default.
 
+On devices that expose the S Pen side button to Obsidian, hold it to erase and release it to resume the selected pen. Holding the pen tip still on the page does not switch tools. In text mode, drag an existing text block to move it, or tap it to edit; use the selection tool's corner handle to resize it.
+
+On Android, the plugin places a `.nomedia` file in the drawing folder so the system media scanner does not add these SVGs to the gallery. Existing gallery entries may take a media rescan to disappear.
+
 You can also run **Insert SVG reference** to embed an existing SVG from the configured drawing folder.
 
 ## Settings

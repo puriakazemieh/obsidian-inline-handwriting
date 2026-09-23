@@ -23,6 +23,7 @@ import { t, type I18nKey } from './i18n';
 import { strokesToSvg, parseSvgBackground, parseSvgStrokes, parseSvgText, generateId } from './svg-utils';
 import { getEffectiveBgColor, getEffectiveLineColor, remapStrokeColor, BgMode, resolveIsDark } from './settings';
 import { VIEW_TYPE_HANDWRITING, DrawingEditorView } from './editor-view';
+import { ensureHandwritingFolder } from './storage';
 import { InlineDrawingEditor } from './inline-editor';
 
 // Dati JSON salvati dentro il code block ```handwriting (formato legacy)
@@ -487,9 +488,7 @@ export async function insertHandwritingBlock(plugin: HandwritingPlugin) {
 	const emptySvg = strokesToSvg([], plugin.settings.canvasWidth, plugin.settings.canvasHeight, bgColor, lineColor);
 
 	const folder = plugin.settings.svgFolder;
-	if (!plugin.app.vault.getAbstractFileByPath(folder)) {
-		await plugin.app.vault.createFolder(folder);
-	}
+	await ensureHandwritingFolder(plugin.app, folder);
 	await plugin.app.vault.create(svgPath, emptySvg);
 
 	// Inserisce il wikilink: Obsidian trova subito il file → lo renderizza come immagine

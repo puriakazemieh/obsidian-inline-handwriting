@@ -49,7 +49,7 @@ export type DrawMode = 'pen' | 'eraser' | 'highlighter' | 'text' | 'lasso';
 export type BackgroundPattern = 'ruled' | 'grid' | 'dots' | 'blank';
 
 // Spaziatura righe orizzontali — costante condivisa con svg-utils.ts
-export const LINE_SPACING = 48;
+export const LINE_SPACING = 52;
 
 let pdfWorkerReady = false;
 function ensurePdfWorker(): void {
@@ -91,6 +91,7 @@ export class DrawingCanvas {
 	private images: ImageElement[] = [];
 	private selectedText: TextElement | null = null;
 	private textInteraction: 'move' | 'resize' | null = null;
+	private textDragMoved = false;
 	private imageBitmaps = new Map<string, HTMLImageElement>();
 	private selectedImage: ImageElement | null = null;
 	private imageInteraction: 'move' | 'resize-left' | 'resize-top' | 'resize-right' | 'resize-bottom' | 'resize-nw' | 'resize-ne' | 'resize-se' | 'resize-sw' | 'crop-left' | 'crop-top' | 'crop-right' | 'crop-bottom' | null = null;
@@ -119,6 +120,9 @@ export class DrawingCanvas {
 	// Funziona sia per disegno che per gomma.
 	private history: CanvasState[] = [];
 	private historyIdx = -1;
+	// Snapshots share completed, immutable strokes. An undo step copies the stroke
+	// list, not every point on every previous page.
+	private readonly MAX_HISTORY_STATES = 24;
 	// Flag per sapere se la gomma ha modificato qualcosa durante un drag
 	private eraserChanged = false;
 	// Callback invocato quando l'altezza del canvas cambia (auto-expand)
@@ -138,8 +142,6 @@ export class DrawingCanvas {
 	// Auto-expand
 	private readonly EXPAND_MARGIN = 40;
 	private readonly EXPAND_AMOUNT = 1123;
-
-	private animFrameId: number | null = null;
 
 	private boundDown: (e: PointerEvent) => void;
 	private boundMove: (e: PointerEvent) => void;
@@ -161,19 +163,28 @@ export class DrawingCanvas {
 	// Samsung WebView may expose the barrel bit only on its transition event and
 	// omit it from subsequent contact moves. Latch it until an explicit release.
 	private stylusButtonHeld = false;
+	private stylusButtonMaskObserved = false;
 	private stylusButtonPointerId: number | null = null;
 	private processedStylusStateEvents = new WeakSet<PointerEvent>();
 	private activePointerId: number | null = null;
 	// Some Samsung WebViews send contextmenu before the pen PointerEvent and
 	// omit the S Pen side-button state from that PointerEvent.
 	private stylusContextHint: { at: number; x: number; y: number } | null = null;
+	// A mobile long-press also emits contextmenu. Remembering the preceding
+	// pointer type lets us accept the S Pen fallback without turning a finger
+	// long-press into an eraser action.
+	private recentPointer: { type: string; x: number; y: number; at: number } | null = null;
 	// Cleanup per i listener aggiuntivi di allowFingerScroll()
 	private fingerScrollCleanup: (() => void) | null = null;
 	// Callback debug: se impostato, mostra Notice all'utente per ogni evento IME/touch
 	private debugFn: ((msg: string) => void) | null = null;
 
-	// Device Pixel Ratio: scala il buffer interno per display ad alta densità (Retina, ecc.)
+	// Device Pixel Ratio actually used by the backing bitmap. It may be lower than
+	// the screen DPR on a very tall page, keeping the bitmap below mobile GPU and
+	// WebView limits while coordinates and saved SVG stay lossless.
 	private dpr: number;
+	private readonly MAX_CANVAS_BACKING_PIXELS = 12_000_000;
+	private readonly MAX_CANVAS_BACKING_DIMENSION = 8_192;
 	// Dimensione logica CSS del canvas (in pixel logici, non fisici)
 	private logicalWidth: number;
 	private logicalHeight: number;
@@ -188,7 +199,7 @@ export class DrawingCanvas {
 	private viewOffsetX = 0;
 
 	constructor(container: HTMLElement, width: number, height: number, defaultHeight: number, mobileMode = false, debugFn: ((msg: string) => void) | null = null) {
-		this.dpr = window.devicePixelRatio || 1;
+		this.dpr = 1;
 		this.worldWidth   = width;
 		this.logicalWidth  = width;
 		this.logicalHeight = height;
@@ -200,16 +211,12 @@ export class DrawingCanvas {
 		// Dimensione CSS: pixel logici → il browser mostra il canvas a questa dimensione
 		this.canvas.style.width  = width  + 'px';
 		this.canvas.style.height = height + 'px';
-		// Buffer interno: pixel fisici moltiplicati per il DPR → nessuna pixelazione
-		this.canvas.width  = Math.round(width  * this.dpr);
-		this.canvas.height = Math.round(height * this.dpr);
 		this.canvas.classList.add('hwm_canvas');
 		// touch-action gestito in styles.css (.hwm_canvas { touch-action: none !important })
 		container.appendChild(this.canvas);
 
 		this.ctx = this.canvas.getContext('2d')!;
-		// Scala il context: da questo punto tutte le coordinate ctx sono in pixel logici
-		this.ctx.scale(this.dpr, this.dpr);
+		this.resetCanvasBuffer();
 		this.clearBackground();
 
 		// Stato iniziale nella history (canvas vuoto)
@@ -268,9 +275,7 @@ export class DrawingCanvas {
 		this.logicalWidth = displayWidth;
 		this.viewScale    = this.logicalWidth / this.worldWidth;
 		this.canvas.style.width = displayWidth + 'px';
-		// Cambiare canvas.width resetta il context → ri-applicare la scala DPR
-		this.canvas.width = Math.round(displayWidth * this.dpr);
-		this.ctx.scale(this.dpr, this.dpr);
+		this.resetCanvasBuffer();
 		this.redraw();
 	}
 	allowFingerScroll(scrollContainer: HTMLElement) {
@@ -533,12 +538,17 @@ export class DrawingCanvas {
 	// fn: funzione pura che restituisce il nuovo colore dato quello corrente.
 	// Non modifica la history — undo/redo continuano a funzionare con i colori aggiornati.
 	remapStrokeColors(fn: (color: string) => string) {
-		// Remap tratti correnti
-		for (const s of this.strokes) s.color = fn(s.color);
+		const seen = new Set<Stroke>();
+		const remap = (stroke: Stroke) => {
+			if (seen.has(stroke)) return;
+			seen.add(stroke);
+			stroke.color = fn(stroke.color);
+		};
+		for (const s of this.strokes) remap(s);
 		for (const text of this.texts) text.color = fn(text.color);
 		// Remap tutti gli snapshot in history (così undo/redo mantiene colori coerenti)
 		for (const snapshot of this.history) {
-			for (const s of snapshot.strokes) s.color = fn(s.color);
+			for (const s of snapshot.strokes) remap(s);
 			for (const text of snapshot.texts) text.color = fn(text.color);
 		}
 		this.redraw();
@@ -580,10 +590,7 @@ export class DrawingCanvas {
 		this.images = [];
 		this.selectedImage = null;
 		this.pushHistory();
-		// Ridisegna subito (canvas visualmente vuoto) anche se l'altezza
-		// è già quella di default (animateHeight ritornerebbe senza fare nulla)
-		this.redraw();
-		this.animateHeight(this.defaultHeight);
+		this.resizeHeight(this.defaultHeight);
 		this.changeCb?.();
 	}
 
@@ -591,10 +598,11 @@ export class DrawingCanvas {
 		if (newHeight < 100) return;
 		this.logicalHeight = newHeight;
 		this.canvas.style.height = newHeight + 'px';
-		// canvas.height resetta il context → ri-applicare la scala DPR
-		this.canvas.height = Math.round(newHeight * this.dpr);
-		this.ctx.scale(this.dpr, this.dpr);
+		this.resetCanvasBuffer();
 		this.redraw();
+		// redraw() contains completed strokes only. Keep the active pen stroke
+		// visible when auto-expansion occurs in the middle of a gesture.
+		if (this.currentStroke) this.drawFullStroke(this.currentStroke);
 	}
 
 	/** Restores enough paper for imported images/PDF pages even if an older SVG viewBox was too short. */
@@ -607,9 +615,6 @@ export class DrawingCanvas {
 	}
 
 	destroy() {
-		if (this.animFrameId !== null) {
-			window.cancelAnimationFrame(this.animFrameId);
-		}
 		this.textInput?.remove();
 		this.closeImageMenu();
 		this.clearImageLongPress();
@@ -639,8 +644,13 @@ export class DrawingCanvas {
 	// Taglia eventuali stati futuri (redo) quando si aggiunge un nuovo stato.
 	private pushHistory() {
 		this.history = this.history.slice(0, this.historyIdx + 1);
-		this.history.push({ strokes: cloneStrokes(this.strokes), texts: cloneTextElements(this.texts), images: cloneImageElements(this.images) });
+		const state = { strokes: [...this.strokes], texts: cloneTextElements(this.texts), images: cloneImageElements(this.images) };
+		this.history.push(state);
 		this.historyIdx = this.history.length - 1;
+		while (this.history.length > this.MAX_HISTORY_STATES) {
+			this.history.shift();
+			this.historyIdx--;
+		}
 	}
 
 	private pointInPolygon(pt: Point, polygon: Point[]): boolean {
@@ -678,6 +688,7 @@ export class DrawingCanvas {
 	/* --- Pointer Events --- */
 
 	private onPointerDown(e: PointerEvent) {
+		this.rememberPointer(e);
 		if (!this.cropMode) this.closeImageMenu();
 		this.updateStylusButtonLatch(e);
 		// pointerType vuoto ("") = evento degradato da Android → trattato come penna
@@ -730,8 +741,11 @@ export class DrawingCanvas {
 		if (this.mode === 'text') {
 			const existingText = this.textAt(pt, 24);
 			if (existingText) {
-				this.isDrawing = false;
-				this.openTextInput(pt, existingText);
+				this.selectedText = existingText;
+				this.textInteraction = 'move';
+				this.dragStartPoint = pt;
+				this.textDragMoved = false;
+				this.redraw();
 				return;
 			}
 			this.isDrawing = false;
@@ -766,6 +780,12 @@ export class DrawingCanvas {
 				return;
 			}
 			if (this.isPointInSelection(pt)) {
+				// Lasso movement mutates points; detach selected strokes from any
+				// shared undo snapshots before the first drag sample.
+				const replacements = new Map<Stroke, Stroke>();
+				for (const stroke of this.selectedStrokes) replacements.set(stroke, cloneStrokes([stroke])[0]!);
+				this.strokes = this.strokes.map(stroke => replacements.get(stroke) ?? stroke);
+				this.selectedStrokes = new Set(replacements.values());
 				this.isDraggingSelection = true;
 				this.dragStartPoint = pt;
 			} else {
@@ -789,6 +809,7 @@ export class DrawingCanvas {
 	}
 
 	private onPointerMove(e: PointerEvent) {
+		this.rememberPointer(e);
 		if (this.imageLongPressPointerId === e.pointerId) this.clearImageLongPress();
 		// Ignore a second finger while a pen gesture owns the canvas. Otherwise a
 		// touch event can prematurely end the temporary S Pen eraser state.
@@ -834,6 +855,18 @@ export class DrawingCanvas {
 		if (!this.isDrawing) return;
 		
 		e.preventDefault();
+		if (this.mode === 'text' && this.selectedText && this.dragStartPoint) {
+			const dx = pt.x - this.dragStartPoint.x;
+			const dy = pt.y - this.dragStartPoint.y;
+			if (Math.hypot(dx, dy) >= 1) {
+				this.selectedText.x += dx;
+				this.selectedText.y += dy;
+				this.dragStartPoint = pt;
+				this.textDragMoved = true;
+				this.redraw();
+			}
+			return;
+		}
 
 		if (this.mode === 'lasso') {
 			if (this.isDraggingSelection && this.dragStartPoint) {
@@ -862,14 +895,14 @@ export class DrawingCanvas {
 
 		if ((this.mode === 'pen' || this.mode === 'highlighter') && this.currentStroke) {
 			if (resumedStroke) return;
-			this.currentStroke.points.push(pt);
-			if (this.mode === 'highlighter') {
-				// Repaint one continuous translucent path: overlapping round caps from
-				// incremental segments otherwise produce a dotted highlighter effect.
-				this.redraw();
-				this.drawFullStroke(this.currentStroke);
-			} else this.drawSegment(this.currentStroke);
-			this.checkAutoExpand(pt);
+			// Android batches high-rate S Pen samples while the UI thread is busy.
+			// Processing the coalesced events prevents a long straight gap when that
+			// batch finally reaches us; only keeping PointerEvent itself drops ink.
+			const samples = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
+			const events = samples.length > 0 ? samples : [e];
+			for (const sample of events) this.extendCurrentStroke(this.eventToPoint(sample));
+			// Some WebViews omit the dispatched event from the coalesced list.
+			this.extendCurrentStroke(pt);
 		} else if (this.mode === 'eraser') {
 			this.eraseFromPointerEvent(e);
 		}
@@ -893,6 +926,17 @@ export class DrawingCanvas {
 			return;
 		}
 		this.isDrawing = false;
+		if (this.mode === 'text' && this.selectedText && this.dragStartPoint) {
+			const text = this.selectedText;
+			this.dragStartPoint = null;
+			this.activePointerId = null;
+			if (this.textDragMoved) {
+				this.textDragMoved = false;
+				this.pushHistory();
+				this.changeCb?.();
+			} else this.openTextInput(this.eventToPoint(e), text);
+			return;
+		}
 
 		if (this.mode === 'lasso') {
 			if (this.isDraggingSelection) {
@@ -922,6 +966,9 @@ export class DrawingCanvas {
 		}
 
 		if ((this.mode === 'pen' || this.mode === 'highlighter') && this.currentStroke) {
+			// A short, fast stroke can have no pointermove at all. Preserve its end
+			// point instead of discarding it as an incomplete stroke.
+			this.extendCurrentStroke(this.eventToPoint(e));
 			if (this.currentStroke.points.length >= 2) {
 				this.strokes.push(this.currentStroke);
 				// Salva nella history dopo ogni tratto completato
@@ -945,7 +992,7 @@ export class DrawingCanvas {
 		input.placeholder = 'Type here…';
 		input.dir = 'auto';
 		if (editingText) input.value = editingText.text;
-		const placement = editingText ? this.textBounds(editingText) : { x: pt.x, y: pt.y };
+		const placement = editingText ? { x: editingText.x, y: editingText.y } : pt;
 		input.setCssProps({
 			'--hwm-text-left': `${this.canvas.offsetLeft + placement.x * this.viewScale}px`,
 			'--hwm-text-top': `${this.canvas.offsetTop + placement.y}px`,
@@ -954,6 +1001,9 @@ export class DrawingCanvas {
 		});
 		host.appendChild(input);
 		this.textInput = input;
+		const updateInputDirection = () => input.classList.toggle('hwm_canvas-text-input--rtl', /[\u0590-\u08ff]/.test(input.value));
+		input.addEventListener('input', updateInputDirection);
+		updateInputDirection();
 		let committed = false;
 		const commit = () => {
 			if (committed) return;
@@ -991,14 +1041,15 @@ export class DrawingCanvas {
 	/* --- Auto-expand --- */
 
 	private checkAutoExpand(pt: Point) {
-		// Se un'animazione è già in corso non lanciarne un'altra:
-		// ripartire da un'altezza intermedia causerebbe un effetto di restringimento.
-		if (this.animFrameId !== null) return;
 		// Confronto in pixel logici: pt.y è in coordinate mondo, logicalHeight è logica
 		if (pt.y > this.logicalHeight - Math.max(this.EXPAND_MARGIN, this.lineSpacing)) {
 			// Add several complete writing lines, so the pen never reaches a hard edge.
 			const newLogicalH = this.logicalHeight + Math.max(this.EXPAND_AMOUNT, this.lineSpacing * 4);
-			this.animateHeight(newLogicalH);
+			// Resizing a multi-page bitmap for eighteen animation frames blocks the
+			// event loop long enough for Android to drop pen samples. One resize is
+			// both faster and visually imperceptible because it happens below the pen.
+			this.resizeHeight(newLogicalH);
+			this.resizeCb?.();
 		}
 	}
 
@@ -1020,6 +1071,7 @@ export class DrawingCanvas {
 	// Use it only for mode transitions; actual ink/erasure still runs once in
 	// onPointerMove so raw and regular events can never duplicate a stroke.
 	private onPointerRawUpdate(e: PointerEvent) {
+		this.rememberPointer(e);
 		if (this.activePointerId !== null && e.pointerId !== this.activePointerId) return;
 		this.updateStylusButtonLatch(e);
 		const stylusEraser = this.isStylusEraserButton(e, false);
@@ -1069,27 +1121,30 @@ export class DrawingCanvas {
 		const sideTransition = e.button === 2 || e.button === 5;
 		if (sideMaskDown) {
 			this.stylusButtonHeld = true;
+			this.stylusButtonMaskObserved = true;
 			this.stylusButtonPointerId = e.pointerId;
 			return false;
+		}
+		// Once the browser has reported the barrel bit, its disappearance is a
+		// reliable release even if the pen tip remains on the glass.
+		if (this.stylusButtonMaskObserved && this.stylusButtonHeld) {
+			this.stylusButtonHeld = false;
+			this.stylusButtonMaskObserved = false;
+			this.stylusButtonPointerId = null;
+			return true;
 		}
 		if (e.type === 'pointerdown' && sideTransition) {
 			this.stylusButtonHeld = true;
 			this.stylusButtonPointerId = e.pointerId;
 			return false;
 		}
-		// When a WebView omits the barrel bit, button=2 on pointermove still arms
-		// the eraser. Never use the same repeated value as a release signal.
-		if (sideTransition && e.type === 'pointermove' && !this.stylusButtonHeld) {
-			this.stylusButtonHeld = true;
-			this.stylusButtonPointerId = e.pointerId;
-			return false;
-		}
-		// `button=2` may be repeated on every Samsung pointermove while the
-		// current-state mask is missing, so only an actual up/cancel ends the latch.
+		// For devices that report only the transition and never the current mask,
+		// keep the eraser until the corresponding pointer release.
 		const explicitRelease = sideTransition && e.type === 'pointerup';
 		if (explicitRelease || e.type === 'pointercancel') {
 			const wasHeld = this.stylusButtonHeld;
 			this.stylusButtonHeld = false;
+			this.stylusButtonMaskObserved = false;
 			this.stylusButtonPointerId = null;
 			return wasHeld;
 		}
@@ -1175,16 +1230,28 @@ export class DrawingCanvas {
 	}
 
 	private onContextMenu(e: MouseEvent) {
-		const image = this.imageAt(this.eventToPoint(e as unknown as PointerEvent));
-		if (image) {
-			e.preventDefault(); e.stopPropagation();
-			this.selectedImage = image; this.selectedStrokes.clear(); this.selectMode('lasso');
-			this.showImageMenu(e);
+		// A stationary pen tip may generate contextmenu after a long press. It
+		// must leave the selected tool alone, including over imported PDF images.
+		const penContact = this.mobileMode && this.activePointerId !== null
+			&& this.recentPointer?.type === 'pen';
+		if (penContact && (e.buttons & 2) === 0) {
+			e.preventDefault();
 			return;
 		}
 		// Fallback for Samsung devices that emit a contextmenu rather than a
-		// secondary PointerEvent for the side button. Do not open Android's menu.
-		if (!this.mobileMode) return;
+		// secondary PointerEvent for the side button. A finger long-press emits the
+		// same event, so only accept it when a pen/mouse pointer was just seen at
+		// this position. This makes the barrel button useful without hijacking a
+		// normal long-press on the page.
+		if (!this.mobileMode || !this.isRecentStylusContextMenu(e) || (e.buttons & 2) === 0) {
+			const image = this.imageAt(this.eventToPoint(e as unknown as PointerEvent));
+			if (image) {
+				e.preventDefault(); e.stopPropagation();
+				this.selectedImage = image; this.selectedStrokes.clear(); this.selectMode('lasso');
+				this.showImageMenu(e);
+			}
+			return;
+		}
 		e.preventDefault();
 		e.stopPropagation();
 		this.stylusButtonHeld = true;
@@ -1256,6 +1323,18 @@ export class DrawingCanvas {
 		return false;
 	}
 
+	private rememberPointer(e: PointerEvent): void {
+		this.recentPointer = { type: e.pointerType || 'pen', x: e.clientX, y: e.clientY, at: Date.now() };
+	}
+
+	private isRecentStylusContextMenu(e: MouseEvent): boolean {
+		const recent = this.recentPointer;
+		return !!recent
+			&& (recent.type === 'pen' || recent.type === 'mouse')
+			&& Date.now() - recent.at < 1500
+			&& Math.hypot(e.clientX - recent.x, e.clientY - recent.y) < 100;
+	}
+
 	private showImageMenu(event: MouseEvent): void {
 		this.closeImageMenu();
 		const host = this.canvas.parentElement;
@@ -1306,6 +1385,7 @@ export class DrawingCanvas {
 		this.temporaryEraserPreviousMode = null;
 		this.temporaryEraserUsesContextHint = false;
 		this.stylusButtonHeld = false;
+		this.stylusButtonMaskObserved = false;
 		this.stylusButtonPointerId = null;
 		if (this.contextEraserArmTimer !== null) {
 			window.clearTimeout(this.contextEraserArmTimer);
@@ -1330,45 +1410,42 @@ export class DrawingCanvas {
 		};
 	}
 
-	private animateHeight(targetLogicalH: number) {
-		const startLogicalH = this.logicalHeight;
-		if (startLogicalH === targetLogicalH) return;
-
-		if (this.animFrameId !== null) {
-			window.cancelAnimationFrame(this.animFrameId);
-			this.animFrameId = null;
+	/** Adds a sampled pen point and paints only the new segment. */
+	private extendCurrentStroke(pt: Point): void {
+		const stroke = this.currentStroke;
+		if (!stroke) return;
+		const previous = stroke.points[stroke.points.length - 1];
+		if (previous) {
+			const dx = pt.x - previous.x;
+			const dy = pt.y - previous.y;
+			// Pointer devices can report several identical/sub-pixel samples. They
+			// do not improve this midpoint renderer, but inflate SVGs and history.
+			if (dx * dx + dy * dy < 0.25) return;
 		}
-
-		const duration = 300;
-		const startTime = performance.now();
-
-		const step = (now: number) => {
-			const elapsed = now - startTime;
-			const progress = Math.min(elapsed / duration, 1);
-			const eased = 1 - Math.pow(1 - progress, 3);
-			// Altezza in pixel logici per questa frame
-			const h = Math.round(startLogicalH + (targetLogicalH - startLogicalH) * eased);
-
-			this.logicalHeight = h;
-			this.canvas.style.height = h + 'px';
-			// canvas.height è in pixel fisici; cambiarlo resetta il context → ri-scalare
-			this.canvas.height = Math.round(h * this.dpr);
-			this.ctx.scale(this.dpr, this.dpr);
+		stroke.points.push(pt);
+		if (this.mode === 'highlighter') {
+			// Repaint one continuous translucent path: overlapping round caps from
+			// incremental segments otherwise produce a dotted highlighter effect.
 			this.redraw();
-			if (this.currentStroke) {
-				this.drawFullStroke(this.currentStroke);
-			}
-			// Notifica chi ascolta (overlay auto-scroll)
-			this.resizeCb?.();
+			this.drawFullStroke(stroke);
+		} else this.drawSegment(stroke);
+		this.checkAutoExpand(pt);
+	}
 
-			if (progress < 1) {
-				this.animFrameId = window.requestAnimationFrame(step);
-			} else {
-				this.animFrameId = null;
-			}
-		};
-
-		this.animFrameId = window.requestAnimationFrame(step);
+	private resetCanvasBuffer(): void {
+		const screenDpr = Math.max(1, window.devicePixelRatio || 1);
+		const area = Math.max(1, this.logicalWidth * this.logicalHeight);
+		const pixelLimitedDpr = Math.sqrt(this.MAX_CANVAS_BACKING_PIXELS / area);
+		const dimensionLimitedDpr = Math.min(
+			this.MAX_CANVAS_BACKING_DIMENSION / Math.max(1, this.logicalWidth),
+			this.MAX_CANVAS_BACKING_DIMENSION / Math.max(1, this.logicalHeight),
+		);
+		this.dpr = Math.min(screenDpr, pixelLimitedDpr, dimensionLimitedDpr);
+		this.canvas.width = Math.max(1, Math.round(this.logicalWidth * this.dpr));
+		this.canvas.height = Math.max(1, Math.round(this.logicalHeight * this.dpr));
+		// Assigning width/height resets the context. setTransform prevents scale
+		// accumulation and keeps all drawing coordinates in CSS pixels.
+		this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
 	}
 
 	/* --- Coordinate --- */
@@ -1487,7 +1564,11 @@ export class DrawingCanvas {
 
 	private isOnTextResizeHandle(text: TextElement, pt: Point): boolean {
 		const bounds = this.textBounds(text);
-		return Math.abs(pt.x - (bounds.x + bounds.width)) < 28 && Math.abs(pt.y - (bounds.y + bounds.height)) < 28;
+		// The old 28-world-pixel hit zone swallowed short Persian words, making
+		// every drag look like a resize. Match the visible handle instead so the
+		// body of a selected text block always remains a reliable move target.
+		const radius = 10 / this.viewScale;
+		return Math.hypot(pt.x - (bounds.x + bounds.width), pt.y - (bounds.y + bounds.height)) <= radius;
 	}
 
 	private imageResizeHandleAt(image: ImageElement, pt: Point): 'resize-left' | 'resize-top' | 'resize-right' | 'resize-bottom' | 'resize-nw' | 'resize-ne' | 'resize-se' | 'resize-sw' | null {

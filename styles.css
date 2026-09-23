@@ -881,6 +881,7 @@
 	background: var(--background-primary);
 	color: var(--hwm-text-color, var(--text-normal));
 	font: 18px/1.35 var(--hwm-text-font, var(--font-text));
+	text-align: start;
 	resize: both;
 	box-shadow: 0 3px 12px rgba(0, 0, 0, 0.16);
 }
@@ -979,6 +980,10 @@
 	flex: 0 0 auto;
 	max-height: none;
 	overflow: visible;
+}
+.hwm_canvas-text-input--rtl {
+	transform: translateX(-100%);
+	width: min(260px, var(--hwm-text-left));
 }
 .hwm_inline-editor .hwm_canvas-wrap { min-width: min(100%, 320px); }
 .internal-embed[data-hwm-decorated="1"] .hwm_reading-inline-host { pointer-events: auto; }

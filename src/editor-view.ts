@@ -11,6 +11,7 @@ import { BackgroundPattern, DrawingCanvas, Stroke, TextElement, ImageElement } f
 import { strokesToSvg, parseSvgBackground, parseSvgStrokes, parseSvgText, parseSvgImages, SvgBackground } from './svg-utils';
 import { getEffectiveBgColor, getEffectiveLineColor, getQuickPalette, remapStrokeColor, resolveIsDark, BgMode } from './settings';
 import { t, type I18nKey } from './i18n';
+import { ensureHandwritingFolder } from './storage';
 
 export const VIEW_TYPE_HANDWRITING = 'inline-handwriting-editor';
 
@@ -94,9 +95,7 @@ export async function saveSvgToDisk(
 	const previousSave = svgSaveQueues.get(svgPath) ?? Promise.resolve();
 	const currentSave = previousSave.catch(() => undefined).then(async () => {
 		const folder = svgPath.substring(0, svgPath.lastIndexOf('/'));
-		if (folder && !plugin.app.vault.getAbstractFileByPath(folder)) {
-			await plugin.app.vault.createFolder(folder);
-		}
+		if (folder) await ensureHandwritingFolder(plugin.app, folder);
 		const existing = plugin.app.vault.getAbstractFileByPath(svgPath);
 		if (existing instanceof TFile) {
 			await plugin.app.vault.modify(existing, svg);
@@ -271,7 +270,7 @@ export async function buildEditorUI(opts: {
 		background?.color ?? bgColor,
 		background?.lineColor ?? lineColor,
 		background?.pattern ?? 'ruled',
-		background?.spacing,
+		background?.spacing ?? plugin.settings.defaultLineSpacing,
 	);
 	canvas.setColor(colors[0]!);
 
@@ -682,9 +681,10 @@ export class DrawingEditorView extends ItemView {
 
 		// Auto-save debounced (2s dopo l'ultimo cambiamento)
 		canvas.onChange(() => {
-			const svg = drawingCanvasToSvg(canvas);
-			this.plugin.cacheSvgSnapshot(this.svgPath, svg);
-			this.plugin.refreshPreview(this.embedId, svg);
+			// Do not serialise the entire drawing for every stroke. On a multi-page
+			// page that work can take longer than the interval between S Pen strokes.
+			// saveSvg() serialises the exact canvas after the quiet period and close()
+			// flushes any pending change.
 			if (this.saveTimer) window.clearTimeout(this.saveTimer);
 			this.saveTimer = window.setTimeout(() => { void this.saveSvg(); }, 2000);
 		});
@@ -812,9 +812,8 @@ export class DrawingModal extends Modal {
 
 		// Auto-save debounced (2s dopo l'ultimo cambiamento)
 		canvas.onChange(() => {
-			const svg = drawingCanvasToSvg(canvas);
-			this.plugin.cacheSvgSnapshot(this.svgPath, svg);
-			this.plugin.refreshPreview(this.embedId, svg);
+			// SVG generation is deferred so the pen path is never blocked by a full
+			// serialisation of an already long document.
 			if (this.saveTimer) window.clearTimeout(this.saveTimer);
 			this.saveTimer = window.setTimeout(() => { void this.saveSvg(); }, 2000);
 		});

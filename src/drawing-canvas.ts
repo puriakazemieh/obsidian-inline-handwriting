@@ -870,6 +870,7 @@ export class DrawingCanvas {
 		// touch event can prematurely end the temporary S Pen eraser state.
 		if (this.activePointerId !== null && e.pointerId !== this.activePointerId) return;
 		this.updateStylusButtonLatch(e);
+		if (this.deferHoverEraserContact(e)) return;
 		// Su mobile: ignora il dito
 		const stylusEraser = this.isStylusEraserButton(e, false);
 		const contextEraser = this.temporaryEraserUsesContextHint
@@ -1139,6 +1140,7 @@ export class DrawingCanvas {
 		this.rememberPointer(e);
 		if (this.activePointerId !== null && e.pointerId !== this.activePointerId) return;
 		this.updateStylusButtonLatch(e);
+		if (this.deferHoverEraserContact(e)) return;
 		const stylusEraser = this.isStylusEraserButton(e, false);
 		const contextEraser = this.temporaryEraserUsesContextHint
 			&& this.temporaryEraserPreviousMode !== null
@@ -1232,6 +1234,9 @@ export class DrawingCanvas {
 		if (!belongsToThisCanvas) return;
 		const released = this.updateStylusButtonLatch(e);
 		if (!released) return;
+		// A zero mask while hovering is transient on this Samsung WebView.
+		// Give the next contact a short chance to arrive before restoring.
+		if (e.pointerType === 'pen' && e.pressure === 0 && this.activePointerId === null) return;
 		// Run after the canvas handler. If release happened over the canvas it can
 		// resume the pen at the exact contact point; otherwise simply restore it.
 		queueMicrotask(() => {
@@ -1404,6 +1409,29 @@ export class DrawingCanvas {
 
 	private rememberPointer(e: PointerEvent): void {
 		this.recentPointer = { type: e.pointerType || 'pen', x: e.clientX, y: e.clientY, at: Date.now() };
+	}
+
+	private deferHoverEraserContact(e: PointerEvent): boolean {
+		if (!this.mobileMode || e.pointerType !== 'pen' || e.pressure !== 0
+			|| (e.buttons & (1 | 2 | 32 | 64)) !== 0 || this.activePointerId !== null
+			|| this.temporaryEraserPreviousMode === null || this.stylusButtonHeld) return false;
+		if (this.temporaryEraserUsesContextHint && this.contextEraserArmTimer !== null
+			&& this.temporaryEraserPointerId === null) return true;
+		// The S Pen briefly drops buttons=1 as Android converts hover to
+		// contact. Keep the tool armed for the new pointer ID. A real release
+		// returns to the pen after this short grace period.
+		this.temporaryEraserUsesContextHint = true;
+		this.temporaryEraserPointerId = null;
+		this.recentPenHoverExit = { x: e.clientX, y: e.clientY, at: Date.now() };
+		if (this.contextEraserArmTimer !== null) window.clearTimeout(this.contextEraserArmTimer);
+		this.contextEraserArmTimer = window.setTimeout(() => {
+			this.contextEraserArmTimer = null;
+			if (this.temporaryEraserPointerId !== null) return;
+			const previousMode = this.temporaryEraserPreviousMode;
+			this.clearTemporaryEraserState();
+			if (previousMode) this.setMode(previousMode);
+		}, 900);
+		return true;
 	}
 
 	private onPointerOut(e: PointerEvent): void {

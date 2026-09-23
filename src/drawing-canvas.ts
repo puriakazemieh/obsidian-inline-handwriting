@@ -748,7 +748,7 @@ export class DrawingCanvas {
 		const stylusEraser = this.isStylusEraserButton(e);
 		const armedContextEraser = this.temporaryEraserUsesContextHint
 			&& this.temporaryEraserPreviousMode !== null
-			&& this.temporaryEraserPointerId === null;
+			&& (this.temporaryEraserPointerId === null || this.temporaryEraserPointerId === e.pointerId);
 		// On the reported Samsung WebView, pressing the side button ended pen
 		// hover and the following contact arrived as pointerType=touch with no
 		// barrel-button bit. A nearby immediate pen-hover exit identifies that
@@ -1409,7 +1409,13 @@ export class DrawingCanvas {
 	private onPointerOut(e: PointerEvent): void {
 		if (!this.mobileMode || e.pointerType !== 'pen' || this.isDrawing || e.pressure > 0
 			|| e.pointerId === this.lastPenContactPointerId) return;
-		if (!this.stylusButtonHeld || this.stylusButtonPointerId !== e.pointerId) return;
+		// Samsung clears the hover button mask on pointerout before the tip
+		// reappears as touch. The global capture listener may already have
+		// cleared stylusButtonHeld; the armed pointer is the reliable signal.
+		if (this.temporaryEraserPreviousMode === null
+			|| (this.temporaryEraserPointerId !== e.pointerId
+				&& (!this.stylusButtonHeld || this.stylusButtonPointerId !== e.pointerId))) return;
+		this.temporaryEraserUsesContextHint = true;
 		this.recentPenHoverExit = { x: e.clientX, y: e.clientY, at: Date.now() };
 		// Android changes this hover pointer into a new touch pointer at contact.
 		// Preserve the armed eraser briefly across that pointer-id transition.

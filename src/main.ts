@@ -13,7 +13,7 @@ import { DEFAULT_SETTINGS, HandwritingSettings, HandwritingSettingTab } from './
 import { registerEmbed, insertHandwritingBlock } from './embed';
 import { VIEW_TYPE_HANDWRITING, DrawingEditorView } from './editor-view';
 import { registerInlineLivePreview } from './inline-live-preview';
-import { hideExistingHandwritingFromGallery, migrateIndexedGalleryFolder } from './storage';
+import { hideExistingHandwritingFromGallery, migrateIndexedGalleryFolder, repairHandwritingLinks } from './storage';
 
 export default class HandwritingPlugin extends Plugin {
 	settings: HandwritingSettings;
@@ -86,6 +86,13 @@ export default class HandwritingPlugin extends Plugin {
 			await this.saveSettings();
 		}
 		await hideExistingHandwritingFromGallery(this.app, this.settings.svgFolder);
+		// Obsidian Sync can deliver an older note after startup. Repair only
+		// handwriting embeds whose relocated SVG actually exists.
+		this.registerEvent(this.app.vault.on('modify', file => {
+			if (file instanceof TFile && file.extension === 'md') {
+				void repairHandwritingLinks(this.app, file).catch(console.error);
+			}
+		}));
 
 		// Applica la lingua interfaccia salvata (o la lingua di sistema se 'auto')
 		setLocale(this.settings.uiLanguage);

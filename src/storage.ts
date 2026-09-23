@@ -31,45 +31,41 @@ export async function hideExistingHandwritingFromGallery(app: App, configuredFol
 	for (const folder of folders) await ensureHandwritingFolder(app, folder, false);
 }
 
-/** Move previously indexed SVGs into a fresh marked folder without breaking note embeds. */
+/** Repair embeds left pointing at the old folder by a sync conflict or a
+ * folder rename. A sync may deliver a note after the folder has moved, so this
+ * is also called for later markdown modifications. Only rewrite existing files. */
+export async function repairHandwritingLinks(app: App, note: TFile): Promise<void> {
+	if (note.extension !== 'md') return;
+	const fix = (content: string) => content.replace(
+		/(!\[\[|!\[[^\]]*\]\(|["']svg["']\s*:\s*["'])_inline_handwriting\/((?:hw_|HTMD_)[^\s\]|)"'<>]+\.svg)/gi,
+		(match, prefix: string, filename: string) => app.vault.getAbstractFileByPath(
+			`${PRIVATE_GALLERY_FOLDER}/${filename}`
+		) instanceof TFile && !(app.vault.getAbstractFileByPath(`${OLD_GALLERY_FOLDER}/${filename}`) instanceof TFile)
+			? `${prefix}${PRIVATE_GALLERY_FOLDER}/${filename}` : match);
+	const content = await app.vault.read(note);
+	if (fix(content) !== content) await app.vault.process(note, fix);
+}
+
+/** Move drawings individually so that Obsidian Sync sees file changes instead
+ * of a folder rename. The destination remains stable on both devices. */
 export async function migrateIndexedGalleryFolder(app: App, configuredFolder: string): Promise<string> {
-	if (normalizePath(configuredFolder) !== OLD_GALLERY_FOLDER) return configuredFolder;
 	const oldFolder = app.vault.getAbstractFileByPath(OLD_GALLERY_FOLDER);
 	const targetFolder = app.vault.getAbstractFileByPath(PRIVATE_GALLERY_FOLDER);
-	if (!(oldFolder instanceof TFolder) && !(targetFolder instanceof TFolder)) return configuredFolder;
+	if (normalizePath(configuredFolder) !== OLD_GALLERY_FOLDER
+		&& normalizePath(configuredFolder) !== PRIVATE_GALLERY_FOLDER) return configuredFolder;
 	if (targetFolder && !(targetFolder instanceof TFolder)) return configuredFolder;
-	if (targetFolder instanceof TFolder) {
-		// A previous run may have moved the directory before note links finished.
-		if (!targetFolder.children.some(file => file.path.toLowerCase().endsWith('.svg'))
-			&& !(oldFolder instanceof TFolder && oldFolder.children.some(file => file.path.toLowerCase().endsWith('.svg')))) {
-			return configuredFolder;
-		}
-		if (oldFolder instanceof TFolder) {
-			for (const file of [...oldFolder.children]) {
-				if (!(file instanceof TFile) || file.extension !== 'svg') continue;
-				const destination = `${PRIVATE_GALLERY_FOLDER}/${file.name}`;
-				if (!app.vault.getAbstractFileByPath(destination)) {
-					await app.fileManager.renameFile(file, destination);
-				}
+	await ensureHandwritingFolder(app, PRIVATE_GALLERY_FOLDER);
+	if (oldFolder instanceof TFolder) {
+		for (const file of [...oldFolder.children]) {
+			if (!(file instanceof TFile) || file.extension !== 'svg'
+				|| !/^(hw_|HTMD_)/i.test(file.basename)) continue;
+			const destination = `${PRIVATE_GALLERY_FOLDER}/${file.name}`;
+			if (!app.vault.getAbstractFileByPath(destination)) {
+				await app.fileManager.renameFile(file, destination);
 			}
 		}
-	} else if (oldFolder instanceof TFolder) {
-		await ensureHandwritingFolder(app, OLD_GALLERY_FOLDER, false);
-		await app.fileManager.renameFile(oldFolder, PRIVATE_GALLERY_FOLDER);
 	}
-	await ensureHandwritingFolder(app, PRIVATE_GALLERY_FOLDER, false);
-	// FileManager updates wikilinks according to Obsidian's preference. Cover
-	// disabled link updates and the legacy JSON code blocks that it cannot see.
-	for (const note of app.vault.getMarkdownFiles()) {
-		const content = await app.vault.read(note);
-		const updated = content
-			.replace(/(!\[\[)_inline_handwriting\/((?:hw_|HTMD_)[^\]|]+\.svg)/gi,
-				`$1${PRIVATE_GALLERY_FOLDER}/$2`)
-			.replace(/(["']svg["']\s*:\s*["'])_inline_handwriting\/((?:hw_|HTMD_)[^"']+\.svg)/gi,
-				`$1${PRIVATE_GALLERY_FOLDER}/$2`);
-		if (updated !== content) await app.vault.modify(note, updated);
-	}
-	// Keep the old directory ignored if an older synced device writes into it.
 	await ensureHandwritingFolder(app, OLD_GALLERY_FOLDER);
+	for (const note of app.vault.getMarkdownFiles()) await repairHandwritingLinks(app, note);
 	return PRIVATE_GALLERY_FOLDER;
 }
